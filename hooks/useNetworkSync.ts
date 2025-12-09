@@ -201,15 +201,13 @@ export const useNetworkSync = (onSyncStateChange?: (isSyncing: boolean) => void)
                   syncResults.quizzesSynced++;
                   submittedAssessmentIds.add(quiz.assessment_id);
                 } 
-                // NEW LOGIC START
                 else if (result.status === 'invalid') {
-                  // 🚨 Security: The server rejected this because dates didn't match.
-                  // We delete the local attempt to prevent it from queueing forever.
+                  // 🚨 Security: The server rejected this because another submission exists
                   console.warn(`🗑️ Deleting invalid offline quiz attempt for ${quiz.assessment_id}`);
                   await deleteCompletedOfflineQuizAttempt(quiz.assessment_id, userEmail);
                   
-                  // Optionally add to errors to notify user
-                  syncResults.errors.push(`Quiz rejected: Concurrent attempt detected.`);
+                  // Add to errors to notify user
+                  syncResults.errors.push(`Quiz: ${result.message || 'Already submitted from another device.'}`);
                 }
                 // NEW LOGIC END
                 else if (result.status === 'error') {

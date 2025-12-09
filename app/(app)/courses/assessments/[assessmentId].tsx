@@ -26,6 +26,7 @@ import { useNetworkStatus } from '../../../../context/NetworkContext';
 import api, { getUserData } from '../../../../lib/api';
 import {
   checkIfAssessmentNeedsDetails,
+  deleteOfflineQuizAttempt,
   getAssessmentDetailsFromDb,
   getCompletedOfflineQuizzes,
   getCurrentServerTime,
@@ -269,7 +270,9 @@ export default function AssessmentDetailsScreen() {
       if (result?.uri) {
         const fileInfo = await FileSystem.getInfoAsync(result.uri);
         setDownloadedFileUri(result.uri);
-        setFileSize(formatBytes(fileInfo.size));
+        if (fileInfo.exists && 'size' in fileInfo) {
+          setFileSize(formatBytes(fileInfo.size));
+        }
         setDownloadDate(new Date().toLocaleDateString());
         Alert.alert('Download Complete!', 'Instructions available for offline viewing.');
       }
@@ -388,6 +391,7 @@ export default function AssessmentDetailsScreen() {
     }
 
     try {
+      // Check for pending offline assignment submissions first
       const unsyncedSubmissions = await getUnsyncedSubmissions(userEmail);
       const pendingOfflineAssignment = unsyncedSubmissions.find(
         (sub: any) => sub.assessment_id === parseInt(assessmentId as string)
@@ -395,7 +399,9 @@ export default function AssessmentDetailsScreen() {
       setHasOfflineAssignment(!!pendingOfflineAssignment);
 
       if (netInfo?.isInternetReachable) {
-        // --- ONLINE MODE ---
+        // ============================================================
+        // 🌐 ONLINE MODE
+        // ============================================================
         console.log('✅ Online: Fetching all assessment data from API.');
 
         const assessmentResponse = await api.get(`/assessments/${assessmentId}`);
@@ -406,22 +412,30 @@ export default function AssessmentDetailsScreen() {
 
         let newAttemptStatus: AttemptStatus | null = null;
         let newLatestSubmission: LatestAssignmentSubmission | null = null;
+        let fetchedSubmittedAssessment: SubmittedAssessment | null = null;
 
+        // 1. Get Submission Status (Completed/Graded/In-Progress)
         try {
           const submittedAssessmentResponse = await api.get(`/assessments/${assessmentId}/submitted-assessment`);
           if (submittedAssessmentResponse.status === 200) {
-            setSubmittedAssessment(submittedAssessmentResponse.data.submitted_assessment);
+            fetchedSubmittedAssessment = submittedAssessmentResponse.data.submitted_assessment;
+            setSubmittedAssessment(fetchedSubmittedAssessment);
           }
         } catch (error: any) {
-          if (error.response?.status === 404) setSubmittedAssessment({ id: 0, score: null, status: 'not_started' });
-          else console.error('Failed to fetch submission summary:', error);
+          if (error.response?.status === 404) {
+            setSubmittedAssessment({ id: 0, score: null, status: 'not_started' });
+          } else {
+            console.error('Failed to fetch submission summary:', error);
+          }
         }
 
+        // 2. Get Attempt Status (for Quizzes/Exams)
         if (fetchedAssessment.type === 'quiz' || fetchedAssessment.type === 'exam') {
           const attemptStatusResponse = await api.get(`/assessments/${assessmentId}/attempt-status`);
           if (attemptStatusResponse.status === 200) {
             newAttemptStatus = attemptStatusResponse.data;
             
+            // Adjust attempts count if there's a completed offline quiz waiting to sync
             if (newAttemptStatus) {
               const completedOfflineQuizzes = await getCompletedOfflineQuizzes(userEmail);
               const pendingOfflineQuiz = completedOfflineQuizzes.find(
@@ -437,14 +451,13 @@ export default function AssessmentDetailsScreen() {
                 if (newAttemptStatus.max_attempts !== null) {
                   newAttemptStatus.attempts_remaining = Math.max(0, newAttemptStatus.max_attempts - newAttemptStatus.attempts_made);
                 }
-                
-                console.log(`✅ Using corrected attempt count: ${newAttemptStatus.attempts_made} attempts made`);
               }
             }
-            
             setAttemptStatus(newAttemptStatus);
           }
-        } else if (['assignment', 'activity', 'project'].includes(fetchedAssessment.type)) {
+        } 
+        // 3. Get Latest Submission (for Assignments)
+        else if (['assignment', 'activity', 'project'].includes(fetchedAssessment.type)) {
           const assignmentSubmissionResponse = await api.get(`/assessments/${assessmentId}/latest-assignment-submission`);
           if (assignmentSubmissionResponse.status === 200) {
             newLatestSubmission = assignmentSubmissionResponse.data;
@@ -452,6 +465,7 @@ export default function AssessmentDetailsScreen() {
           }
         }
 
+        // 4. Save Everything to Local DB (for future offline use)
         const validCourseId = courseId ? (typeof courseId === 'string' ? parseInt(courseId, 10) : Number(courseId)) : fetchedAssessment.course_id;
         await saveAssessmentsToDb([fetchedAssessment], validCourseId, userEmail);
         await saveAssessmentDetailsToDb(fetchedAssessment.id, userEmail, newAttemptStatus, newLatestSubmission);
@@ -459,16 +473,39 @@ export default function AssessmentDetailsScreen() {
         const needsDetails = await checkIfAssessmentNeedsDetails(fetchedAssessment.id, userEmail);
         setHasDetailedData(!needsDetails);
 
-        const offlineAttempt = await getOfflineQuizAttempt(parseInt(assessmentId as string), userEmail);
-        setHasOfflineAttempt(!!offlineAttempt);
+        // ------------------------------------------------------------------
+        // 🚨 CLEANUP LOGIC: Handle Stale Local Attempts 🚨
+        // ------------------------------------------------------------------
+        // If the server says the assessment is 'completed' or 'graded', but we still have an 
+        // 'in_progress' attempt saved locally (from a previous session or device switch),
+        // we must DELETE the local attempt so the "Resume" button disappears.
+        if (fetchedSubmittedAssessment && (fetchedSubmittedAssessment.status === 'completed' || fetchedSubmittedAssessment.status === 'graded')) {
+            console.log("🧹 Assessment completed on server. Checking for stale local data...");
+            const staleAttempt = await getOfflineQuizAttempt(parseInt(assessmentId as string), userEmail);
+            
+            if (staleAttempt) {
+                console.log("🗑️ Deleting stale local attempt to prevent false resume.");
+                await deleteOfflineQuizAttempt(parseInt(assessmentId as string), userEmail);
+            }
+            setHasOfflineAttempt(false);
+        } else {
+            // Otherwise, check normally if we have a valid offline attempt to resume
+            const offlineAttempt = await getOfflineQuizAttempt(parseInt(assessmentId as string), userEmail);
+            setHasOfflineAttempt(!!offlineAttempt);
+        }
+        // ------------------------------------------------------------------
+
       } else {
-        // --- OFFLINE MODE ---
+        // ============================================================
+        // 📵 OFFLINE MODE
+        // ============================================================
         console.log('⚠️ Offline: Fetching assessment details from local DB.');
         const offlineAssessment = await getAssessmentDetailsFromDb(assessmentId as string, userEmail);
         const offlineAttempt = await getOfflineQuizAttempt(parseInt(assessmentId as string), userEmail);
 
         if (offlineAssessment) {
           const offlineAttemptCount = await getOfflineAttemptCount(parseInt(assessmentId as string), userEmail);
+          
           const updatedAttemptStatus = {
             ...offlineAssessment.attemptStatus,
             attempts_made: offlineAttemptCount.attempts_made,
@@ -476,37 +513,27 @@ export default function AssessmentDetailsScreen() {
             has_in_progress_attempt: !!offlineAttempt,
             can_start_new_attempt: offlineAttemptCount.attempts_remaining === null || offlineAttemptCount.attempts_remaining > 0,
           };
+          
           setAssessmentDetail(offlineAssessment);
           setAttemptStatus(updatedAttemptStatus);
           setHasDetailedData(true);
           setHasOfflineAttempt(!!offlineAttempt);
 
-          // --- START OF FIX ---
-          //
-          // We check if a 'pendingOfflineAssignment' (from the 'offline_submissions' table)
-          // exists. This variable is already defined and fetched at the top of the
-          // 'fetchAssessmentDetailsAndAttemptStatus' function.
-          //
+          // If there is a pending assignment submission waiting to sync, show it as the status
           if (pendingOfflineAssignment) {
             console.log('✅ Offline: Found pending assignment submission. Displaying it.');
-            
-            // If it exists, it's the "latest" version, so we
-            // manually build the 'latestAssignmentSubmission' object from it.
             setLatestAssignmentSubmission({
               has_submitted_file: true,
-              submitted_file_path: pendingOfflineAssignment.file_uri, // The local URI or link
-              submitted_file_url: null, // No online URL yet
+              submitted_file_path: pendingOfflineAssignment.file_uri,
+              submitted_file_url: null,
               submitted_file_name: pendingOfflineAssignment.original_filename,
               original_filename: pendingOfflineAssignment.original_filename,
               submitted_at: pendingOfflineAssignment.submitted_at,
-              status: 'to sync', // This will show the "TO SYNC" badge
+              status: 'to sync',
             });
           } else {
-            // If no pending offline submission, we just use what's in the
-            // 'offline_assessment_data' table (which might be null or an old submission)
             setLatestAssignmentSubmission(offlineAssessment.latestSubmission);
           }
-          // --- END OF FIX ---
 
         } else {
           setError('Assessment details not available offline.');
@@ -514,6 +541,7 @@ export default function AssessmentDetailsScreen() {
         }
       }
 
+      // Check for saved review data (for "View Answers" button)
       const localReviewExists = await hasAssessmentReviewSaved(parseInt(assessmentId as string), userEmail);
       setHasLocalReview(localReviewExists);
 
@@ -1245,13 +1273,13 @@ export default function AssessmentDetailsScreen() {
             <View style={styles.availabilityItem}>
               <Ionicons name="calendar" size={16} color="#7f8c8d" />
               <Text style={styles.availabilityLabel}>Available From:</Text>
-              <Text style={styles.availabilityValue}>{formatDate(assessmentDetail.available_at)}</Text>
+              <Text style={styles.availabilityValue}>{formatDate(assessmentDetail.available_at ?? undefined)}</Text>
             </View>
             {assessmentDetail.unavailable_at && (
               <View style={styles.availabilityItem}>
                 <Ionicons name="calendar-outline" size={16} color="#e74c3c" />
                 <Text style={styles.availabilityLabel}>Available Until:</Text>
-                <Text style={styles.availabilityValue}>{formatDate(assessmentDetail.unavailable_at)}</Text>
+                <Text style={styles.availabilityValue}>{formatDate(assessmentDetail.unavailable_at ?? undefined)}</Text>
               </View>
             )}
           </View>
@@ -1466,7 +1494,7 @@ export default function AssessmentDetailsScreen() {
                     buttonAction = () => {
                       const reviewPath = `/courses/assessments/${assessmentDetail.id.toString()}/review-answer`;
                       router.push({
-                        pathname: reviewPath,
+                        pathname: reviewPath as any,
                         params: { assessmentId: assessmentDetail.id.toString(), isOffline: 'true' },
                       });
                     };

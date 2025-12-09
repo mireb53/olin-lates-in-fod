@@ -94,24 +94,9 @@ export default {
       "router": {
         "origin": IS_PROD ? "https://olinlms.com" : undefined
       },
-      // "eas": {
-      //   "projectId": "824ee34b-3739-4280-82b8-dd7a8ba8e5ee"
-      // }
-      // "eas": {
-      //   "projectId": "3438c390-06db-4c15-a5ab-b41868009b2a"
-      // }
       "eas": {
-        "projectId": "eeec91a6-0879-483f-bd94-fc0eb53e0c66"
+        "projectId": "4526015c-89c5-4433-a367-217de4a21292"
       }
-      // "eas": {
-      //   "projectId": "864813f8-e96b-4dc2-980a-f78f61b3a262"
-      // }
-      // "eas": {
-      //   "projectId": "c02beff9-ba4a-4afb-91b0-b2fff90a38ab"
-      // }
-      // "eas": {
-      //   "projectId": "f1b3f445-d766-4b2b-8b1a-5e486cc41470"
-      // }
     }
   }
 };

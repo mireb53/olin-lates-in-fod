@@ -59,6 +59,81 @@ type StudentAnswers = {
   };
 };
 
+// Database result types
+type CourseDetailRow = {
+  course_data: string;
+};
+
+type MaterialRow = {
+  id: number;
+  user_email: string;
+  course_id: number;
+  title: string;
+  file_path: string | null;
+  content: string | null;
+  material_type: string;
+  created_at: string;
+  available_at: string | null;
+  unavailable_at: string | null;
+};
+
+type AssessmentRow = {
+  id: number;
+  user_email: string;
+  course_id: number;
+  title: string;
+  description: string | null;
+  type: string;
+  available_at: string | null;
+  unavailable_at: string | null;
+  max_attempts: number | null;
+  duration_minutes: number | null;
+  points: number;
+  assessment_file_path: string | null;
+  assessment_file_url: string | null;
+  assessment_data: string;
+  allow_answer_review: number;
+};
+
+type AssessmentDataRow = {
+  data: string;
+};
+
+type ReviewDataRow = {
+  review_data: string;
+};
+
+type QuizAttemptRow = {
+  attempt_id: number;
+  assessment_id: number;
+  user_email: string;
+  start_time: string;
+  end_time: string | null;
+  is_completed: number;
+  answers: string | null;
+  shuffled_order: string | null;
+  server_submission_id: number | null;
+};
+
+type CountRow = {
+  count: number;
+};
+
+type AppStateRow = {
+  user_email: string;
+  server_time: string;
+  server_time_offset: number;
+  last_time_check: number;
+  time_check_sequence: number;
+  last_online_sync: number;
+  manipulation_detected: number;
+};
+
+type SyncedAssessmentRow = {
+  assessment_id: number;
+  last_sync_timestamp: string;
+};
+
 // Global database instance
 let dbInstance: SQLite.SQLiteDatabase | null = null;
 let dbInitialized = false;
@@ -588,7 +663,7 @@ export const getCourseDetailsFromDb = async (courseId: number, userEmail: string
     await initDb();
     const db = await getDb();
 
-    const result = await db.getAllAsync(
+    const result = await db.getAllAsync<CourseDetailRow>(
       `SELECT course_data FROM offline_course_details WHERE course_id = ? AND user_email = ?;`,
       [courseId, userEmail]
     );
@@ -778,7 +853,7 @@ export const saveMaterialsToDb = async (materials: any[], courseId: number, user
 export const getMaterialDetailsFromDb = async (materialId: number, userEmail: string): Promise<any | null> => {
   try {
     const db = await getDb();
-    const result = await db.getFirstAsync(
+    const result = await db.getFirstAsync<MaterialRow>(
       `SELECT * FROM offline_materials WHERE id = ? AND user_email = ?;`,
       [materialId, userEmail]
     );
@@ -1109,7 +1184,7 @@ export const getAssessmentDetailsFromDb = async (assessmentId: number | string, 
     const db = await getDb();
     
     // First, get the base assessment details
-    const assessmentResult = await db.getFirstAsync(
+    const assessmentResult = await db.getFirstAsync<AssessmentRow>(
       `SELECT * FROM offline_assessments WHERE id = ? AND user_email = ?;`,
       [assessmentId, userEmail]
     );
@@ -1126,7 +1201,7 @@ export const getAssessmentDetailsFromDb = async (assessmentId: number | string, 
     };
 
     // Then, get the dynamic data (attempt status, submission)
-    const dataResult = await db.getFirstAsync(
+    const dataResult = await db.getFirstAsync<AssessmentDataRow>(
       `SELECT data FROM offline_assessment_data WHERE assessment_id = ? AND user_email = ?;`,
       [assessmentId, userEmail]
     );
@@ -1216,8 +1291,7 @@ export const forceRefreshAllAssessmentStatuses = async (
     const db = await getDb();
     console.log('🔄 [Force Refresh] Starting force-refresh for all assessment statuses...');
 
-    // 1. Get ALL assessments, not just "stale" ones
-    const allAssessments = await db.getAllAsync(
+    const allAssessments = await db.getAllAsync<{ id: number; type: string }>(
       `SELECT id, type FROM offline_assessments WHERE user_email = ?;`,
       [userEmail]
     );
@@ -1232,7 +1306,6 @@ export const forceRefreshAllAssessmentStatuses = async (
     let successCount = 0;
     let failedCount = 0;
 
-    // 2. Loop through every single one
     for (let i = 0; i < allAssessments.length; i++) {
       const assessment = allAssessments[i];
       const assessmentId = assessment.id;
@@ -1243,35 +1316,44 @@ export const forceRefreshAllAssessmentStatuses = async (
       }
 
       try {
-        // 3. Perform the exact logic from [assessmentId].tsx
         let attemptStatus = null;
         let latestSubmission = null;
 
         if (assessmentType === 'quiz' || assessmentType === 'exam') {
-          // Check for quiz/exam status
+          // A. Fetch Attempt Status
           try {
             const attemptResponse = await apiInstance.get(`/assessments/${assessmentId}/attempt-status`);
             if (attemptResponse.status === 200) {
               attemptStatus = attemptResponse.data;
             }
-          } catch (e) { /* ignore errors (e.g., 404) */ }
+          } catch (e) { /* ignore errors */ }
+
+          // B. [NEW] Fetch Submission Status & Perform Cleanup
+          // This ensures that if the quiz is "Completed" on server, we wipe any local "In Progress" data.
+          try {
+            const subResponse = await apiInstance.get(`/assessments/${assessmentId}/submitted-assessment`);
+            if (subResponse.status === 200) {
+              const sub = subResponse.data.submitted_assessment;
+              
+              if (sub && (sub.status === 'completed' || sub.status === 'graded')) {
+                console.log(`🧹 [Force Refresh] Quiz ${assessmentId} is ${sub.status} on server. Removing stale local attempts.`);
+                // This deletes the 'in_progress' attempt from the local DB
+                await deleteOfflineQuizAttempt(assessmentId, userEmail);
+              }
+            }
+          } catch (e) { /* ignore 404 or other errors */ }
         }
 
         if (['assignment', 'activity', 'project'].includes(assessmentType)) {
-          // Check for assignment submission status
           try {
             const submissionResponse = await apiInstance.get(`/assessments/${assessmentId}/latest-assignment-submission`);
             if (submissionResponse.status === 200) {
               latestSubmission = submissionResponse.data;
             }
-          } catch (e) { /* ignore errors (e.g., 404) */ }
+          } catch (e) { /* ignore errors */ }
         }
 
-        // 4. Save the fresh data (or nulls) to the local DB
-        // This is the CRITICAL step that fixes the "Done" status
         await saveAssessmentDetailsToDb(assessmentId, userEmail, attemptStatus, latestSubmission);
-        
-        // 5. Also update the sync timestamp so it's considered "fresh"
         await saveAssessmentSyncTimestamp(assessmentId, userEmail, new Date().toISOString());
 
         successCount++;
@@ -1299,19 +1381,19 @@ export const getAssessmentsNeedingSync = async (
     const db = await getDb();
     
     // Get all assessment IDs for the user
-    const allAssessments = await db.getAllAsync(
+    const allAssessments = await db.getAllAsync<{ id: number }>(
       `SELECT DISTINCT id FROM offline_assessments WHERE user_email = ?;`,
       [userEmail]
     );
     
     // Get assessments with detailed data and sync timestamps
-    const assessmentsWithData = await db.getAllAsync(
+    const assessmentsWithData = await db.getAllAsync<SyncedAssessmentRow>(
       `SELECT assessment_id, last_sync_timestamp FROM offline_assessment_sync WHERE user_email = ?;`,
       [userEmail]
     );
     
-    const allAssessmentIds = allAssessments.map((row: any) => row.id);
-    const syncedAssessmentIds = assessmentsWithData.map((row: any) => row.assessment_id);
+    const allAssessmentIds = allAssessments.map((row) => row.id);
+    const syncedAssessmentIds = assessmentsWithData.map((row) => row.assessment_id);
     
     // Find missing assessments (never synced)
     const missingAssessments = allAssessmentIds.filter(
@@ -1319,7 +1401,7 @@ export const getAssessmentsNeedingSync = async (
     );
     
     // Check for outdated assessments by comparing server timestamps
-    const outdatedAssessments = [];
+    const outdatedAssessments: number[] = [];
     
     for (const syncedAssessment of assessmentsWithData) {
       try {
@@ -1368,7 +1450,7 @@ export const saveAssessmentReviewToDb = async (assessmentId: number, userEmail: 
 export const getAssessmentReviewFromDb = async (assessmentId: number, userEmail: string): Promise<any | null> => {
   try {
     const db = await getDb();
-    const result = await db.getFirstAsync(
+    const result = await db.getFirstAsync<ReviewDataRow>(
       `SELECT review_data FROM offline_assessment_reviews WHERE assessment_id = ? AND user_email = ?;`,
       [assessmentId, userEmail]
     );
@@ -1388,11 +1470,11 @@ export const getAssessmentReviewFromDb = async (assessmentId: number, userEmail:
 export const hasAssessmentReviewSaved = async (assessmentId: number, userEmail: string): Promise<boolean> => {
   try {
     const db = await getDb();
-    const result = await db.getFirstAsync(
+    const result = await db.getFirstAsync<CountRow>(
       `SELECT COUNT(*) as count FROM offline_assessment_reviews WHERE assessment_id = ? AND user_email = ?;`,
       [assessmentId, userEmail]
     );
-    return (result as any)?.count > 0;
+    return result?.count ? result.count > 0 : false;
   } catch (error) {
     console.error(`❌ Error checking for saved assessment review for assessment ${assessmentId}:`, error);
     return false;
@@ -1480,8 +1562,8 @@ const downloadSingleAssessmentDetails = async (
     let attemptStatus = null;
     let latestSubmission = null;
     
-    // Fetch attempt status for quiz/exam types
     if (assessmentType === 'quiz' || assessmentType === 'exam') {
+      // A. Fetch Attempt Status
       try {
         const attemptResponse = await apiInstance.get(`/assessments/${assessmentId}/attempt-status`);
         if (attemptResponse.status === 200) {
@@ -1490,9 +1572,23 @@ const downloadSingleAssessmentDetails = async (
       } catch (error) {
         console.warn(`Failed to fetch attempt status for assessment ${assessmentId}`);
       }
+
+      // B. [NEW] Fetch Submission Status & Perform Cleanup
+      try {
+        const subResponse = await apiInstance.get(`/assessments/${assessmentId}/submitted-assessment`);
+        if (subResponse.status === 200) {
+          const sub = subResponse.data.submitted_assessment;
+          
+          // Check if Completed/Graded
+          if (sub && (sub.status === 'completed' || sub.status === 'graded')) {
+             console.log(`🧹 [Auto Sync] Quiz ${assessmentId} is done on server. Cleaning local attempts.`);
+             // Remove the stale local attempt so the user sees "Completed" instead of "Resume"
+             await deleteOfflineQuizAttempt(assessmentId, userEmail);
+          }
+        }
+      } catch (e) { /* ignore 404 */ }
     }
     
-    // Fetch latest submission for assignment types
     if (['assignment', 'activity', 'project'].includes(assessmentType)) {
       try {
         const submissionResponse = await apiInstance.get(`/assessments/${assessmentId}/latest-assignment-submission`);
@@ -1566,7 +1662,7 @@ export const saveQuizQuestionsToDb = async (
     console.log(`🧠 Saving ${questions.length} quiz questions for assessment ${assessmentId}`);
     
     // Get assessment details to include duration
-    const assessmentResult = await db.getFirstAsync(
+    const assessmentResult = await db.getFirstAsync<{ duration_minutes: number | null }>(
       `SELECT duration_minutes FROM offline_assessments WHERE id = ? AND user_email = ?;`,
       [assessmentId, userEmail]
     );
@@ -1715,7 +1811,7 @@ export const downloadAllQuizQuestions = async (
     const db = await getDb();
     
     // Get all quiz and exam type assessments
-    const quizAssessments = await db.getAllAsync(
+    const quizAssessments = await db.getAllAsync<{ id: number }>(
       `SELECT id FROM offline_assessments 
        WHERE user_email = ? AND (type = 'quiz' OR type = 'exam');`,
       [userEmail]
@@ -1837,13 +1933,13 @@ export const getOfflineAttemptCount = async (assessmentId: number, userEmail: st
   try {
     const db = await getDb();
     
-    const assessmentData = await db.getFirstAsync(
+    const assessmentData = await db.getFirstAsync<AssessmentDataRow>(
       `SELECT data FROM offline_assessment_data 
        WHERE assessment_id = ? AND user_email = ?;`,
       [assessmentId, userEmail]
     );
 
-    let storedAttemptStatus = null;
+    let storedAttemptStatus: any = null;
     if (assessmentData?.data) {
       try {
         // ✅ FIX: Decrypt first!
@@ -1856,13 +1952,13 @@ export const getOfflineAttemptCount = async (assessmentId: number, userEmail: st
     }
 
     // Get completed attempts count from offline_quiz_attempts
-    const offlineAttempts = await db.getFirstAsync(
+    const offlineAttempts = await db.getFirstAsync<CountRow>(
       `SELECT COUNT(*) as count FROM offline_quiz_attempts 
        WHERE assessment_id = ? AND user_email = ? AND is_completed = 1;`,
       [assessmentId, userEmail]
     );
 
-    const offlineCount = (offlineAttempts?.count || 0);
+    const offlineCount = offlineAttempts?.count || 0;
     
     // If we have stored attempt status, use it as base and add offline attempts
     if (storedAttemptStatus) {
@@ -1892,8 +1988,8 @@ export const getOfflineQuizAnswers = async (assessmentId: number, userEmail: str
   try {
     await initDb();
     const db = await getDb();
-    const result = await db.getFirstAsync(
-      `SELECT answers FROM offline_quiz_attempts WHERE assessment_id = ? AND user_email = ?;`,
+    const result = await db.getFirstAsync<{ answers: string | null }>(
+      `SELECT answers FROM offline_quiz_attempts WHERE assessment_id = ? AND user_email = ? AND is_completed = 0;`,
       [assessmentId, userEmail]
     );
     if (result && result.answers) {
@@ -1918,7 +2014,7 @@ export const updateOfflineQuizAnswers = async (assessmentId: number, userEmail: 
     const encryptedAnswers = encryptData(answersString);
 
     await db.runAsync(
-      `UPDATE offline_quiz_attempts SET answers = ? WHERE assessment_id = ? AND user_email = ?;`,
+      `UPDATE offline_quiz_attempts SET answers = ? WHERE assessment_id = ? AND user_email = ? AND is_completed = 0;`,
       [
         encryptedAnswers, // Save encrypted data
         assessmentId,
@@ -1936,11 +2032,11 @@ export const getOfflineQuizAttemptStatus = async (assessmentId: number, userEmai
   try {
     await initDb();
     const db = await getDb();
-    const result = await db.getFirstAsync(
+    const result = await db.getFirstAsync<{ is_completed: number }>(
       `SELECT is_completed FROM offline_quiz_attempts WHERE assessment_id = ? AND user_email = ?;`,
       [assessmentId, userEmail]
     );
-    if (result === undefined) {
+    if (result === undefined || result === null) {
       return 'not_started';
     } else if (result.is_completed === 0) {
       return 'in_progress';
@@ -2055,7 +2151,7 @@ export const submitOfflineQuiz = async (assessmentId: number, userEmail: string,
         
         // 5. Securely save option selections
         if (studentAnswer.type === 'multiple_choice' || studentAnswer.type === 'true_false') {
-          const selectedOptionIds = Array.isArray(studentAnswer.answer) ? studentAnswer.answer : [studentAnswer.answer];
+          const selectedOptionIds: (string | number)[] = Array.isArray(studentAnswer.answer) ? studentAnswer.answer : [studentAnswer.answer];
           const originalOptions = originalQuestion.options || [];
           
           for (const option of originalOptions) {
@@ -2471,7 +2567,7 @@ export const getSavedServerTime = async (userEmail: string): Promise<string | nu
   try {
     await initDb();
     const db = await getDb();
-    const result = await db.getAllAsync(
+    const result = await db.getAllAsync<AppStateRow>(
       `SELECT * FROM app_state WHERE user_email = ?;`,
       [userEmail]
     );
@@ -2540,7 +2636,7 @@ export const detectTimeManipulation = async (
   try {
     await initDb();
     const db = await getDb();
-    const result = await db.getAllAsync(
+    const result = await db.getAllAsync<AppStateRow>(
       `SELECT * FROM app_state WHERE user_email = ?;`,
       [userEmail]
     );
@@ -2584,7 +2680,7 @@ export const getOfflineTimeStatus = async (userEmail: string): Promise<{
 } | null> => {
   try {
     const db = await getDb();
-    const record = await db.getFirstAsync(
+    const record = await db.getFirstAsync<AppStateRow>(
       `SELECT * FROM app_state WHERE user_email = ?;`,
       [userEmail]
     );
@@ -2712,7 +2808,7 @@ export const checkManipulationHistory = async (userEmail: string): Promise<boole
     await initDb();
     const db = await getDb();
     
-    const result = await db.getAllAsync(
+    const result = await db.getAllAsync<{ manipulation_detected: number }>(
       `SELECT manipulation_detected FROM app_state WHERE user_email = ?;`,
       [userEmail]
     );

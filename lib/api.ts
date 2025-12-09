@@ -21,6 +21,9 @@ interface UnsyncedQuiz {
   start_time: string;  
   end_time: string;
   server_submission_id?: number;
+  // Aliases for compatibility
+  started_at?: string;
+  completed_at?: string;
 }
 
 const api = axios.create({
@@ -32,8 +35,7 @@ const api = axios.create({
   },
 });
 
-export type SyncResultStatus = 'success' | 'error' | 'locked';
-
+export type SyncResultStatus = 'success' | 'error' | 'locked' | 'invalid';
 interface SyncResult {
   status: SyncResultStatus;
   submissionId?: number;
@@ -149,8 +151,8 @@ const performOfflineSync = async () => {
         const syncSuccess = await syncOfflineQuiz(
           quiz.assessment_id,
           quiz.answers,
-          quiz.started_at,
-          quiz.completed_at
+          quiz.start_time,
+          quiz.end_time
         );
         
         if (syncSuccess) {
@@ -711,7 +713,7 @@ export const syncOfflineQuiz = async (
   endTime: string,
   submissionId?: number
 ): Promise<SyncResult> => {
-  // 1. LOCK CHECK: Prevent race condition between Dashboard and Background Sync
+  // 1. LOCK CHECK
   if (activeUploads.has(assessmentId)) {
     console.log(`⚠️ Quiz ${assessmentId} is already syncing. Skipping duplicate request.`);
     return { status: 'locked' };
@@ -734,45 +736,50 @@ export const syncOfflineQuiz = async (
     });
     
     if (response.status === 200 && response.data.submission_id) {
-      console.log(`✅ Successfully synced offline quiz for assessment ${assessmentId}. New submission ID: ${response.data.submission_id}`);
-      
+      // ... (Success logic remains the same) ...
       const submissionId = response.data.submission_id;
       
-      // Fetch review data logic...
       try {
         const user = await getUserData();
         if (user?.email) {
-          console.log(`🧠 Fetching full review data for submission ID: ${submissionId}...`);
           const reviewResponse = await api.get(`/submitted-assessments/${submissionId}`);
-          
           if (reviewResponse.status === 200 && reviewResponse.data.submitted_assessment) {
-            const reviewData = reviewResponse.data.submitted_assessment;
-            await saveAssessmentReviewToDb(assessmentId, user.email, reviewData);
-            console.log(`💾 Saved full review data for assessment ${assessmentId} to local DB.`);
-          } else {
-            console.warn(`⚠️ Could not fetch review data after sync for submission ${submissionId}.`);
+            await saveAssessmentReviewToDb(assessmentId, user.email, reviewResponse.data.submitted_assessment);
           }
         }
-      } catch (reviewError) {
-        console.warn('⚠️ Failed to fetch/save review data after sync:', reviewError);
-      }
+      } catch (reviewError) { /* ignore */ }
       
       return { status: 'success', submissionId };
     } else {
-      console.warn(`⚠️ Unexpected response:`, response.data);
-      // RETURN SPECIFIC MESSAGE
       return { status: 'error', message: 'Unexpected server response.' };
     }
 
   } catch (error: any) {
     console.error(`❌ Error syncing offline quiz:`, error.response?.data || error.message);
-    // RETURN SPECIFIC MESSAGE
+    
+    const errorCode = error.response?.data?.error_code;
+    
+    // 🚨 FIX IS HERE: Add 'MAX_ATTEMPTS_REACHED' to the list
+    if (
+      errorCode === 'CONCURRENT_SESSION_CONFLICT' || 
+      errorCode === 'ASSESSMENT_ALREADY_COMPLETED' ||
+      errorCode === 'MAX_ATTEMPTS_REACHED' // <--- ADDED THIS
+    ) {
+      // This tells the app: "The server rejected this forever. Delete it."
+      return { 
+        status: 'invalid', 
+        message: error.response?.data?.message || 'Submission rejected by server.'
+      };
+    }
+    
     const msg = error.response?.data?.message || error.message || 'Unknown Error';
     return { status: 'error', message: msg };
   } finally {
     activeUploads.delete(assessmentId);
   }
 };
+
+// ... (Rest of the file remains the same)
 
 const formatAnswersForSync = (answersJson: string): any[] => {
   try {
@@ -786,7 +793,7 @@ const formatAnswersForSync = (answersJson: string): any[] => {
       let selectedOptions: number[] = [];
       if (questionData.type === 'multiple_choice' || questionData.type === 'true_false') {
         if (Array.isArray(questionData.answer)) {
-          selectedOptions = questionData.answer.map(optId => 
+          selectedOptions = questionData.answer.map((optId: string | number) => 
             typeof optId === 'string' ? parseInt(optId) : optId
           );
         } else if (questionData.answer !== undefined && questionData.answer !== null) {
@@ -834,6 +841,7 @@ export const manualSync = async (): Promise<{ success: number; failed: number }>
     let successCount = 0;
     let failCount = 0;
     
+    // ... (Submission sync loop remains the same) ...
     for (const submission of unsyncedSubmissions) {
       const result = await syncOfflineSubmission(
         submission.assessment_id,
@@ -842,14 +850,12 @@ export const manualSync = async (): Promise<{ success: number; failed: number }>
         submission.submitted_at
       );
       
-      // Check status instead of boolean
       if (result.status === 'success') {
         await deleteOfflineSubmission(submission.id);
         successCount++;
       } else if (result.status === 'error') {
         failCount++;
       }
-      // If 'locked', we ignore it (it's syncing elsewhere), don't count as fail
     }
 
     for (const quiz of unsyncedQuizzes) {
@@ -864,7 +870,15 @@ export const manualSync = async (): Promise<{ success: number; failed: number }>
       if (result.status === 'success') {
         await deleteCompletedOfflineQuizAttempt(quiz.assessment_id, userData.email);
         successCount++;
-      } else if (result.status === 'error') {
+      } 
+      // 2. FIX: Handle Invalid/Cheat Attempts in Manual Sync
+      else if (result.status === 'invalid') {
+        console.warn(`🗑️ [Manual Sync] Deleting invalid/conflict quiz attempt ${quiz.assessment_id}`);
+        await deleteCompletedOfflineQuizAttempt(quiz.assessment_id, userData.email);
+        // We don't count this as 'success', but we successfully removed the blocker.
+        // Optionally count as failed or just ignore.
+      }
+      else if (result.status === 'error') {
         failCount++;
       }
     }

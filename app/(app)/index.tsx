@@ -12,7 +12,7 @@ import api, {
   syncOfflineQuiz, syncOfflineSubmission,
 } from '../../lib/api';
 import {
-  deleteOfflineQuizAttempt,
+  deleteCompletedOfflineQuizAttempt,
   deleteOfflineSubmission,
   downloadAllQuizQuestions,
   getCompletedOfflineQuizzes,
@@ -419,31 +419,43 @@ useEffect(() => {
             }
           }
 
-          // --- B. Sync Quizzes ---
           for (const quizAttempt of completedOfflineQuizzes) {
             
             currentItemIndex++;
             setSyncMessage(`Syncing item ${currentItemIndex} of ${totalItems}\n(Uploading Quiz...)`);
             setSyncProgressValue(95);
 
-            // 🚨 FIX IS HERE: Added the 5th parameter (server_submission_id)
             const result = await syncOfflineQuiz(
               quizAttempt.assessment_id,
               quizAttempt.answers,
               quizAttempt.start_time,
               quizAttempt.end_time,
-              quizAttempt.server_submission_id // <--- THIS WAS MISSING
+              quizAttempt.server_submission_id
             );
 
             if (result.status === 'success') {
               setSyncProgressValue(100);
-              await deleteOfflineQuizAttempt(quizAttempt.assessment_id, user.email);
+              // 1. FIX: Use deleteCompleted... not deleteOffline...
+              await deleteCompletedOfflineQuizAttempt(quizAttempt.assessment_id, user.email);
               syncedCount++;
-            } else if (result.status === 'locked') {
+            } 
+            else if (result.status === 'invalid') {
+               console.log(`🗑️ [Home Sync] Deleting invalid/conflict quiz attempt ${quizAttempt.assessment_id}`);
+               
+               // 2. FIX: Use deleteCompleted... here too!
+               // The attempt waiting to be synced is in the 'completed' state (is_completed=1).
+               // Using deleteOfflineQuizAttempt (is_completed=0) would fail to find/delete it.
+               await deleteCompletedOfflineQuizAttempt(quizAttempt.assessment_id, user.email);
+               
+               failedCount++;
+               errorMessages.push(`Quiz ${quizAttempt.assessment_id}: Removed invalid attempt (Conflict).`);
+            }
+            else if (result.status === 'locked') {
                console.log(`Assessment ${quizAttempt.assessment_id} is locked.`);
                setSyncMessage(`Assessment is syncing in background...`);
                await new Promise(r => setTimeout(r, 1000));
-            } else {
+            } 
+            else {
               failedCount++;
               errorMessages.push(`Assessment: ${result.message || 'Failed'}`);
             }
