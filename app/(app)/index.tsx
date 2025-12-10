@@ -30,6 +30,11 @@ import {
 import { showOfflineModeGuide } from '../../lib/offlineWarning';
 const { width, height } = Dimensions.get('window');
 
+// Responsive design helper
+const isTablet = width >= 768;
+const isLargeTablet = width >= 1024;
+const contentMaxWidth = isLargeTablet ? 900 : isTablet ? 700 : width;
+
 interface Course {
   id: number;
   title: string;
@@ -1588,10 +1593,12 @@ useEffect(() => {
   );
 }
 
+// Responsive Styles
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#f8f9fa',
+    alignItems: isTablet ? 'center' : 'stretch',
   },
   loadingContainer: {
     justifyContent: 'center',
@@ -1599,34 +1606,36 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     marginTop: 16,
-    fontSize: 16,
+    fontSize: isTablet ? 18 : 16,
     color: '#5f6368',
   },
   scrollView: {
     flex: 1,
+    width: isTablet ? contentMaxWidth : '100%',
   },
   header: {
     backgroundColor: '#fff',
-    paddingTop: 24,
-    paddingHorizontal: 20,
-    paddingBottom: 24,
+    paddingTop: isTablet ? 32 : 24,
+    paddingHorizontal: isTablet ? 28 : 20,
+    paddingBottom: isTablet ? 32 : 24,
     borderBottomWidth: 1,
     borderBottomColor: '#e0e0e0',
+    width: '100%',
   },
   headerContent: {
-    gap: 8,
+    gap: isTablet ? 12 : 8,
   },
   welcomeText: {
-    fontSize: 18,
+    fontSize: isTablet ? 22 : 18,
     color: '#5f6368',
   },
   userNameText: {
-    fontSize: 20,
+    fontSize: isTablet ? 26 : 20,
     fontWeight: '600',
     color: '#202124',
   },
   subText: {
-    fontSize: 14,
+    fontSize: isTablet ? 16 : 14,
     color: '#5f6368',
     marginTop: 4,
   },
@@ -1634,14 +1643,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     alignSelf: 'flex-start',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    paddingHorizontal: isTablet ? 16 : 12,
+    paddingVertical: isTablet ? 8 : 6,
     backgroundColor: '#f1f3f4',
     borderRadius: 16,
-    marginTop: 12,
+    marginTop: isTablet ? 16 : 12,
   },
   offlineText: {
-    fontSize: 12,
+    fontSize: isTablet ? 14 : 12,
     color: '#5f6368',
     marginLeft: 6,
     fontWeight: '500',
@@ -1650,35 +1659,35 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     alignSelf: 'flex-start',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingHorizontal: isTablet ? 16 : 12,
+    paddingVertical: isTablet ? 10 : 8,
     backgroundColor: '#e8f0fe',
     borderRadius: 8,
-    marginTop: 12,
+    marginTop: isTablet ? 16 : 12,
     borderWidth: 1,
     borderColor: '#1967d2',
   },
   offlineGuideButtonText: {
-    fontSize: 13,
+    fontSize: isTablet ? 15 : 13,
     color: '#1967d2',
     marginLeft: 6,
     fontWeight: '600',
   },
   offlineTimerContainer: {
-    marginTop: 12,
-    padding: 12,
+    marginTop: isTablet ? 16 : 12,
+    padding: isTablet ? 16 : 12,
     backgroundColor: '#fef7e0',
     borderRadius: 8,
     borderWidth: 1,
     borderColor: '#fce8b2',
   },
   offlineTimerText: {
-    fontSize: 13,
+    fontSize: isTablet ? 15 : 13,
     color: '#b7791f',
     marginBottom: 8,
   },
   progressBarBackground: {
-    height: 6,
+    height: isTablet ? 8 : 6,
     backgroundColor: '#fce8b2',
     borderRadius: 3,
     overflow: 'hidden',
@@ -1691,24 +1700,24 @@ const styles = StyleSheet.create({
   downloadIndicator: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 12,
-    padding: 12,
+    marginTop: isTablet ? 16 : 12,
+    padding: isTablet ? 16 : 12,
     backgroundColor: '#e8f0fe',
     borderRadius: 8,
   },
   downloadText: {
-    fontSize: 13,
+    fontSize: isTablet ? 15 : 13,
     color: '#1967d2',
     marginLeft: 8,
   },
   searchButton: {
-    marginHorizontal: 16,
-    marginTop: 16,
-    marginBottom: 8,
+    marginHorizontal: isTablet ? 24 : 16,
+    marginTop: isTablet ? 20 : 16,
+    marginBottom: isTablet ? 12 : 8,
     backgroundColor: '#1967d2',
-    borderRadius: 8,
-    paddingVertical: 14,
-    paddingHorizontal: 20,
+    borderRadius: isTablet ? 10 : 8,
+    paddingVertical: isTablet ? 18 : 14,
+    paddingHorizontal: isTablet ? 28 : 20,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -1719,11 +1728,11 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   searchIcon: {
-    marginRight: 8,
+    marginRight: isTablet ? 10 : 8,
   },
   searchButtonText: {
     color: '#fff',
-    fontSize: 16,
+    fontSize: isTablet ? 18 : 16,
     fontWeight: '500',
   },
   disabledButton: {
@@ -1732,18 +1741,17 @@ const styles = StyleSheet.create({
   },
   statsSection: {
     flexDirection: 'row',
-    paddingHorizontal: 16,
-    paddingVertical: 16,
-    gap: 12,
+    paddingHorizontal: isTablet ? 24 : 16,
+    paddingVertical: isTablet ? 20 : 16,
+    gap: isTablet ? 16 : 12,
   },
   statCard: {
     flex: 1,
     backgroundColor: '#fff',
-    padding: 16,
-    borderRadius: 12, // Increased radius for modern look
+    padding: isTablet ? 20 : 16,
+    borderRadius: isTablet ? 14 : 12,
     borderWidth: 1,
     borderColor: '#e0e0e0',
-    // Added shadow for depth
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.05,
@@ -1754,39 +1762,39 @@ const styles = StyleSheet.create({
   statHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 12,
-    gap: 8,
+    marginBottom: isTablet ? 16 : 12,
+    gap: isTablet ? 10 : 8,
   },
   iconBadge: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: isTablet ? 40 : 32,
+    height: isTablet ? 40 : 32,
+    borderRadius: isTablet ? 20 : 16,
     justifyContent: 'center',
     alignItems: 'center',
   },
   statTitle: {
-    fontSize: 14,
+    fontSize: isTablet ? 16 : 14,
     fontWeight: '600',
     color: '#5f6368',
   },
   statMainValue: {
-    fontSize: 24,
+    fontSize: isTablet ? 28 : 24,
     fontWeight: '700',
     color: '#202124',
-    marginBottom: 8,
+    marginBottom: isTablet ? 10 : 8,
   },
   statSubtext: {
-    fontSize: 11,
+    fontSize: isTablet ? 13 : 11,
     color: '#80868b',
   },
   
-  // NEW: Storage Bar Styles
+  // Storage Bar Styles
   storageBarContainer: {
-    height: 6,
+    height: isTablet ? 8 : 6,
     backgroundColor: '#f1f3f4',
     borderRadius: 3,
     width: '100%',
-    marginBottom: 6,
+    marginBottom: isTablet ? 8 : 6,
     overflow: 'hidden',
   },
   storageBarFill: {
@@ -1794,10 +1802,10 @@ const styles = StyleSheet.create({
     borderRadius: 3,
   },
   adContainer: {
-    marginHorizontal: 16,
-    marginBottom: 16,
+    marginHorizontal: isTablet ? 24 : 16,
+    marginBottom: isTablet ? 20 : 16,
     backgroundColor: '#fff',
-    borderRadius: 8,
+    borderRadius: isTablet ? 10 : 8,
     borderWidth: 1,
     borderColor: '#e0e0e0',
     overflow: 'hidden',

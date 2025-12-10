@@ -5,7 +5,7 @@ import * as ScreenCapture from 'expo-screen-capture';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert, Animated, ScrollView,
+  Alert, Animated, Dimensions, ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -17,6 +17,12 @@ import { useNetworkStatus } from '../../../../../context/NetworkContext';
 import api, { getUserData, syncOfflineQuiz } from '../../../../../lib/api';
 // Removed `startOfflineQuiz` and `hasQuizQuestionsSaved` from imports as they are only used in AssessmentDetailsScreen now
 import { deleteCompletedOfflineQuizAttempt, deleteOfflineQuizAttempt, detectTimeManipulation, getAssessmentReviewFromDb, getCompletedOfflineQuizzes, getCurrentServerTime, getDb, getOfflineQuizAnswers, getOfflineQuizAttempt, getOfflineQuizAttemptStatus, getQuizQuestionsFromDb, submitOfflineQuiz, updateOfflineQuizAnswers, updateTimeSync } from '../../../../../lib/localDb';
+
+// Responsive design helper
+const { width: screenWidth } = Dimensions.get('window');
+const isTablet = screenWidth >= 768;
+const isLargeTablet = screenWidth >= 1024;
+const contentMaxWidth = isLargeTablet ? 900 : isTablet ? 700 : screenWidth;
 
 // Interface definitions (unchanged)
 interface OriginalQuestion {
@@ -1385,14 +1391,18 @@ export default function AttemptQuizScreen() {
   );
 }
 
+// Responsive Styles
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#f8f9fa',
+    alignItems: isTablet ? 'center' : 'stretch',
   },
   scrollViewContent: {
-    padding: 16,
+    padding: isTablet ? 24 : 16,
     paddingBottom: 32,
+    width: isTablet ? contentMaxWidth : '100%',
+    alignSelf: 'center',
   },
   loadingContainer: {
     flex: 1,
@@ -1402,27 +1412,27 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     marginTop: 12,
-    fontSize: 16,
+    fontSize: isTablet ? 18 : 16,
     color: '#5f6368',
   },
   errorContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    padding: 24,
+    padding: isTablet ? 32 : 24,
     backgroundColor: '#f8f9fa',
   },
   errorText: {
-    fontSize: 16,
+    fontSize: isTablet ? 18 : 16,
     color: '#d93025',
     textAlign: 'center',
-    marginBottom: 16,
+    marginBottom: isTablet ? 20 : 16,
   },
   retryButton: {
     backgroundColor: '#1967d2',
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 8,
+    paddingHorizontal: isTablet ? 32 : 24,
+    paddingVertical: isTablet ? 16 : 12,
+    borderRadius: isTablet ? 10 : 8,
     elevation: 2,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
@@ -1431,14 +1441,14 @@ const styles = StyleSheet.create({
   },
   retryButtonText: {
     color: '#fff',
-    fontSize: 16,
+    fontSize: isTablet ? 18 : 16,
     fontWeight: '600',
   },
   headerCard: {
     backgroundColor: '#fff',
-    borderRadius: 8,
-    padding: 20,
-    marginBottom: 16,
+    borderRadius: isTablet ? 12 : 8,
+    padding: isTablet ? 28 : 20,
+    marginBottom: isTablet ? 24 : 16,
     borderWidth: 1,
     borderColor: '#e0e0e0',
     elevation: 2,
@@ -1453,57 +1463,57 @@ const styles = StyleSheet.create({
     backgroundColor: '#fef7f7',
   },
   quizTitle: {
-    fontSize: 24,
+    fontSize: isTablet ? 28 : 24,
     fontWeight: '600',
     color: '#202124',
-    marginBottom: 8,
+    marginBottom: isTablet ? 12 : 8,
   },
   quizInfo: {
-    fontSize: 14,
+    fontSize: isTablet ? 16 : 14,
     color: '#5f6368',
-    marginBottom: 6,
-    lineHeight: 20,
+    marginBottom: isTablet ? 8 : 6,
+    lineHeight: isTablet ? 24 : 20,
   },
   timeWarning: {
     color: '#d93025',
     fontWeight: '600',
-    fontSize: 16,
+    fontSize: isTablet ? 18 : 16,
   },
   autoSubmittingText: {
-    fontSize: 14,
+    fontSize: isTablet ? 16 : 14,
     color: '#e37400',
     fontWeight: '600',
-    marginTop: 8,
+    marginTop: isTablet ? 10 : 8,
   },
   timeManipulationWarning: {
-    fontSize: 14,
+    fontSize: isTablet ? 16 : 14,
     color: '#d93025',
     fontWeight: '700',
-    marginTop: 8,
-    padding: 12,
+    marginTop: isTablet ? 10 : 8,
+    padding: isTablet ? 16 : 12,
     backgroundColor: '#fff',
     borderRadius: 6,
     borderWidth: 1,
     borderColor: '#d93025',
   },
   quizStatus: {
-    fontSize: 14,
+    fontSize: isTablet ? 16 : 14,
     color: '#5f6368',
-    marginTop: 8,
+    marginTop: isTablet ? 10 : 8,
     fontWeight: '500',
     textTransform: 'capitalize',
   },
   offlineStatus: {
-    fontSize: 14,
+    fontSize: isTablet ? 16 : 14,
     color: '#e37400',
     marginTop: 6,
     fontWeight: '600',
   },
   questionCard: {
     backgroundColor: '#fff',
-    borderRadius: 8,
-    padding: 16,
-    marginBottom: 16,
+    borderRadius: isTablet ? 12 : 8,
+    padding: isTablet ? 24 : 16,
+    marginBottom: isTablet ? 24 : 16,
     borderWidth: 1,
     borderColor: '#e0e0e0',
     elevation: 1,
@@ -1520,42 +1530,41 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
-    marginBottom: 16,
+    marginBottom: isTablet ? 20 : 16,
   },
   questionText: {
     flex: 1,
-    fontSize: 16,
+    fontSize: isTablet ? 18 : 16,
     fontWeight: '500',
     color: '#202124',
-    lineHeight: 24,
+    lineHeight: isTablet ? 28 : 24,
   },
-  // REMOVED: Saving indicator style from here
   savingIndicator: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginLeft: 12,
+    marginLeft: isTablet ? 16 : 12,
   },
-  savingIndicatorBottom: { // ADDED NEW STYLE for bottom indicator
+  savingIndicatorBottom: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginLeft: 12,
-    marginTop: 8,
+    marginLeft: isTablet ? 16 : 12,
+    marginTop: isTablet ? 10 : 8,
   },
   savingText: {
-    fontSize: 12,
+    fontSize: isTablet ? 14 : 12,
     color: '#1967d2',
     marginLeft: 6,
   },
   optionsContainer: {
-    marginTop: 8,
+    marginTop: isTablet ? 12 : 8,
   },
   optionButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 12,
-    marginBottom: 8,
+    padding: isTablet ? 16 : 12,
+    marginBottom: isTablet ? 12 : 8,
     backgroundColor: '#f8f9fa',
-    borderRadius: 8,
+    borderRadius: isTablet ? 10 : 8,
     borderWidth: 1,
     borderColor: '#e0e0e0',
   },
@@ -1568,41 +1577,41 @@ const styles = StyleSheet.create({
     opacity: 0.5,
   },
   radioCircle: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
+    width: isTablet ? 24 : 20,
+    height: isTablet ? 24 : 20,
+    borderRadius: isTablet ? 12 : 10,
     borderWidth: 2,
     borderColor: '#5f6368',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 12,
+    marginRight: isTablet ? 16 : 12,
   },
   radioChecked: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
+    width: isTablet ? 12 : 10,
+    height: isTablet ? 12 : 10,
+    borderRadius: isTablet ? 6 : 5,
     backgroundColor: '#1967d2',
   },
   checkboxSquare: {
-    width: 20,
-    height: 20,
+    width: isTablet ? 24 : 20,
+    height: isTablet ? 24 : 20,
     borderRadius: 4,
     borderWidth: 2,
     borderColor: '#5f6368',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 12,
+    marginRight: isTablet ? 16 : 12,
   },
   checkboxCheck: {
     color: '#1967d2',
-    fontSize: 14,
+    fontSize: isTablet ? 16 : 14,
     fontWeight: 'bold',
   },
   optionText: {
     flex: 1,
-    fontSize: 15,
+    fontSize: isTablet ? 17 : 15,
     color: '#202124',
-    lineHeight: 22,
+    lineHeight: isTablet ? 26 : 22,
   },
   optionTextSelected: {
     fontWeight: '500',
@@ -1612,14 +1621,14 @@ const styles = StyleSheet.create({
     backgroundColor: '#f8f9fa',
     borderWidth: 1,
     borderColor: '#e0e0e0',
-    borderRadius: 8,
-    padding: 12,
-    fontSize: 15,
+    borderRadius: isTablet ? 10 : 8,
+    padding: isTablet ? 16 : 12,
+    fontSize: isTablet ? 17 : 15,
     color: '#202124',
-    marginTop: 8,
+    marginTop: isTablet ? 12 : 8,
   },
   essayInput: {
-    minHeight: 120,
+    minHeight: isTablet ? 160 : 120,
     textAlignVertical: 'top',
   },
   disabledInput: {
@@ -1627,15 +1636,15 @@ const styles = StyleSheet.create({
     color: '#5f6368',
   },
   pointsText: {
-    fontSize: 13,
+    fontSize: isTablet ? 15 : 13,
     color: '#5f6368',
-    marginTop: 12,
+    marginTop: isTablet ? 16 : 12,
     fontWeight: '500',
   },
   scoreText: {
-    fontSize: 14,
+    fontSize: isTablet ? 16 : 14,
     fontWeight: '600',
-    marginTop: 8,
+    marginTop: isTablet ? 10 : 8,
   },
   correctScore: {
     color: '#137333',

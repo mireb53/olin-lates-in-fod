@@ -4,11 +4,17 @@ import { Ionicons } from '@expo/vector-icons';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import * as ScreenCapture from 'expo-screen-capture';
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, Dimensions, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { useNetworkStatus } from '../../../../../context/NetworkContext';
 import api, { getUserData } from '../../../../../lib/api';
 import { getAssessmentReviewFromDb } from '../../../../../lib/localDb';
+
+// Responsive design helper
+const { width: screenWidth } = Dimensions.get('window');
+const isTablet = screenWidth >= 768;
+const isLargeTablet = screenWidth >= 1024;
+const contentMaxWidth = isLargeTablet ? 900 : isTablet ? 700 : screenWidth;
 
 // Define the data structures for clarity
 interface OriginalQuestion {
@@ -187,10 +193,11 @@ export default function ReviewAnswerScreen() {
                     isCorrectOption = !!option.is_correct_option; // Fallback
                   }
 
-                  // Determine styling (no changes needed here)
+                  // Determine styling
                   const shouldShowGreen = isSelectedByUser && isQuestionCorrect === true;
                   const shouldShowRed = isSelectedByUser && isQuestionCorrect === false;
-                  const shouldShowMissedCorrect = isCorrectOption && !isSelectedByUser && question.question_type === 'multiple_choice';
+                  // Show the correct answer (green/orange) when user got it wrong - for both MC and T/F
+                  const shouldShowMissedCorrect = isCorrectOption && !isSelectedByUser && isQuestionCorrect === false;
 
                   return (
                     <TouchableOpacity
@@ -199,7 +206,7 @@ export default function ReviewAnswerScreen() {
                         styles.optionButton,
                         shouldShowGreen && styles.correctOption,
                         shouldShowRed && styles.incorrectOption,
-                        shouldShowMissedCorrect && styles.correctOption,
+                        shouldShowMissedCorrect && styles.missedCorrectOption,
                       ]}
                       disabled
                     >
@@ -209,14 +216,14 @@ export default function ReviewAnswerScreen() {
                       <Text style={styles.optionText}>{option.option_text}</Text>
                       {shouldShowGreen && <Ionicons name="checkmark-circle" size={22} color="#137333" style={styles.correctnessIcon} />}
                       {shouldShowRed && <Ionicons name="close-circle" size={22} color="#d93025" style={styles.correctnessIcon} />}
-                      {shouldShowMissedCorrect && <Ionicons name="checkmark-circle-outline" size={22} color="#137333" style={styles.correctnessIcon} />}
+                      {shouldShowMissedCorrect && <Ionicons name="checkmark-circle" size={22} color="#f39c12" style={styles.correctnessIcon} />}
                     </TouchableOpacity>
                   );
                 })}
               </View>
             )}
 
-            {/* Identification & Essay Answer Display (no changes)*/}
+            {/* Identification & Essay Answer Display */}
             {['identification', 'essay'].includes(question.question_type) && (
               <View style={styles.answerContainer}>
                 <Text style={styles.answerLabel}>Your Answer:</Text>
@@ -226,6 +233,14 @@ export default function ReviewAnswerScreen() {
                 ]}>
                   {question.submitted_answer || '(No answer provided)'}
                 </Text>
+                {/* Show correct answer for identification when wrong */}
+                {question.question_type === 'identification' && isQuestionCorrect === false && correctAnswerText && (
+                  <View style={styles.correctAnswerContainer}>
+                    <Ionicons name="checkmark-circle" size={18} color="#f39c12" />
+                    <Text style={styles.correctAnswerLabel}>Correct Answer:</Text>
+                    <Text style={styles.correctAnswerText}>{correctAnswerText}</Text>
+                  </View>
+                )}
                 {question.question_type === 'essay' && (
                   <View style={styles.essayNoteContainer}>
                     <Ionicons name="information-circle-outline" size={18} color="#00579b" />
@@ -235,7 +250,7 @@ export default function ReviewAnswerScreen() {
               </View>
             )}
 
-            {/* {correctAnswerText && (question.question_type === 'identification' || question.question_type === 'true_false' || question.question_type === 'multiple_choice') && (
+            {/*
               <View style={styles.correctAnswerContainer}>
                 <Text style={styles.correctAnswerLabel}>Correct Answer:</Text>
                 <Text style={styles.correctAnswerText}>{correctAnswerText}</Text>
@@ -267,45 +282,188 @@ export default function ReviewAnswerScreen() {
   );
 }
 
-// Styles (no changes)
+// Responsive Styles
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f8f9fa' },
-  scrollViewContent: { padding: 16, paddingBottom: 32 },
-  centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
-  loadingText: { marginTop: 12, fontSize: 16, color: '#5f6368' },
-  errorText: { fontSize: 16, color: '#d93025', textAlign: 'center', marginBottom: 16 },
-  headerCard: { backgroundColor: '#fff', borderRadius: 8, padding: 20, marginBottom: 16, borderWidth: 1, borderColor: '#e0e0e0' },
-  quizTitle: { fontSize: 24, fontWeight: '600', color: '#202124', marginBottom: 8 },
-  finalScoreText: { fontSize: 18, color: '#1967d2', fontWeight: '600', marginBottom: 8 },
-  quizStatus: { fontSize: 14, color: '#5f6368', textTransform: 'capitalize' },
-  offlineStatus: { fontSize: 14, color: '#e37400', marginTop: 6, fontWeight: '600' },
-  questionCard: { backgroundColor: '#fff', borderRadius: 8, padding: 16, marginBottom: 16, borderWidth: 1, borderColor: '#e0e0e0' },
-  questionText: { fontSize: 16, fontWeight: '500', color: '#202124', lineHeight: 24, marginBottom: 16 },
-  optionsContainer: { gap: 8 },
-  optionButton: { flexDirection: 'row', alignItems: 'center', padding: 12, marginBottom: 8, backgroundColor: '#f8f9fa', borderRadius: 8, borderWidth: 1.5, borderColor: '#e0e0e0' },
+  container: { 
+    flex: 1, 
+    backgroundColor: '#f8f9fa',
+    alignItems: isTablet ? 'center' : 'stretch',
+  },
+  scrollViewContent: { 
+    padding: isTablet ? 24 : 16, 
+    paddingBottom: 32,
+    width: isTablet ? contentMaxWidth : '100%',
+    alignSelf: 'center',
+  },
+  centerContainer: { 
+    flex: 1, 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    padding: isTablet ? 32 : 24 
+  },
+  loadingText: { 
+    marginTop: 12, 
+    fontSize: isTablet ? 18 : 16, 
+    color: '#5f6368' 
+  },
+  errorText: { 
+    fontSize: isTablet ? 18 : 16, 
+    color: '#d93025', 
+    textAlign: 'center', 
+    marginBottom: 16 
+  },
+  headerCard: { 
+    backgroundColor: '#fff', 
+    borderRadius: isTablet ? 12 : 8, 
+    padding: isTablet ? 28 : 20, 
+    marginBottom: isTablet ? 24 : 16, 
+    borderWidth: 1, 
+    borderColor: '#e0e0e0' 
+  },
+  quizTitle: { 
+    fontSize: isTablet ? 28 : 24, 
+    fontWeight: '600', 
+    color: '#202124', 
+    marginBottom: isTablet ? 12 : 8 
+  },
+  finalScoreText: { 
+    fontSize: isTablet ? 22 : 18, 
+    color: '#1967d2', 
+    fontWeight: '600', 
+    marginBottom: isTablet ? 12 : 8 
+  },
+  quizStatus: { 
+    fontSize: isTablet ? 16 : 14, 
+    color: '#5f6368', 
+    textTransform: 'capitalize' 
+  },
+  offlineStatus: { 
+    fontSize: isTablet ? 16 : 14, 
+    color: '#e37400', 
+    marginTop: 6, 
+    fontWeight: '600' 
+  },
+  questionCard: { 
+    backgroundColor: '#fff', 
+    borderRadius: isTablet ? 12 : 8, 
+    padding: isTablet ? 24 : 16, 
+    marginBottom: isTablet ? 20 : 16, 
+    borderWidth: 1, 
+    borderColor: '#e0e0e0' 
+  },
+  questionText: { 
+    fontSize: isTablet ? 18 : 16, 
+    fontWeight: '500', 
+    color: '#202124', 
+    lineHeight: isTablet ? 28 : 24, 
+    marginBottom: isTablet ? 20 : 16 
+  },
+  optionsContainer: { gap: isTablet ? 12 : 8 },
+  optionButton: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    padding: isTablet ? 16 : 12, 
+    marginBottom: isTablet ? 10 : 8, 
+    backgroundColor: '#f8f9fa', 
+    borderRadius: isTablet ? 10 : 8, 
+    borderWidth: 1.5, 
+    borderColor: '#e0e0e0' 
+  },
   correctOption: { borderColor: '#137333', backgroundColor: '#e6f4ea' },
   incorrectOption: { borderColor: '#d93025', backgroundColor: '#fce8e6' },
-  optionText: { flex: 1, fontSize: 15, color: '#202124', lineHeight: 22 },
-  correctnessIcon: { marginLeft: 'auto', paddingLeft: 10 },
-  radioCircle: { width: 20, height: 20, borderRadius: 10, borderWidth: 2, borderColor: '#5f6368', justifyContent: 'center', alignItems: 'center', marginRight: 12 },
-  radioChecked: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#1967d2' },
-  checkboxSquare: { width: 20, height: 20, borderRadius: 4, borderWidth: 2, borderColor: '#5f6368', justifyContent: 'center', alignItems: 'center', marginRight: 12 },
-  checkboxCheck: { color: '#1967d2', fontSize: 14, fontWeight: 'bold' },
-  answerContainer: { marginTop: 8, gap: 8 },
-  answerLabel: { fontSize: 13, color: '#5f6368', fontWeight: 'bold' },
-  answerText: { fontSize: 15, color: '#202124', padding: 10, backgroundColor: '#f1f3f4', borderRadius: 8, borderWidth: 1, borderColor: '#e0e0e0' },
+  missedCorrectOption: { borderColor: '#f39c12', backgroundColor: '#fef3e2' },
+  optionText: { 
+    flex: 1, 
+    fontSize: isTablet ? 17 : 15, 
+    color: '#202124', 
+    lineHeight: isTablet ? 26 : 22 
+  },
+  correctnessIcon: { marginLeft: 'auto', paddingLeft: isTablet ? 14 : 10 },
+  radioCircle: { 
+    width: isTablet ? 24 : 20, 
+    height: isTablet ? 24 : 20, 
+    borderRadius: isTablet ? 12 : 10, 
+    borderWidth: 2, 
+    borderColor: '#5f6368', 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    marginRight: isTablet ? 16 : 12 
+  },
+  radioChecked: { 
+    width: isTablet ? 12 : 10, 
+    height: isTablet ? 12 : 10, 
+    borderRadius: isTablet ? 6 : 5, 
+    backgroundColor: '#1967d2' 
+  },
+  checkboxSquare: { 
+    width: isTablet ? 24 : 20, 
+    height: isTablet ? 24 : 20, 
+    borderRadius: 4, 
+    borderWidth: 2, 
+    borderColor: '#5f6368', 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    marginRight: isTablet ? 16 : 12 
+  },
+  checkboxCheck: { color: '#1967d2', fontSize: isTablet ? 16 : 14, fontWeight: 'bold' },
+  answerContainer: { marginTop: isTablet ? 12 : 8, gap: isTablet ? 10 : 8 },
+  answerLabel: { fontSize: isTablet ? 15 : 13, color: '#5f6368', fontWeight: 'bold' },
+  answerText: { 
+    fontSize: isTablet ? 17 : 15, 
+    color: '#202124', 
+    padding: isTablet ? 14 : 10, 
+    backgroundColor: '#f1f3f4', 
+    borderRadius: 8, 
+    borderWidth: 1, 
+    borderColor: '#e0e0e0' 
+  },
   incorrectAnswerText: { borderColor: '#d93025', backgroundColor: '#fce8e6' },
   correctAnswerBox: { borderColor: '#137333', backgroundColor: '#e6f4ea' },
-  correctAnswerContainer: { marginTop: 12, padding: 10, backgroundColor: '#e6f4ea', borderRadius: 8, borderLeftWidth: 4, borderLeftColor: '#137333' },
-  correctAnswerLabel: { fontSize: 13, fontWeight: 'bold', color: '#137333' },
-  correctAnswerText: { fontSize: 15, color: '#0d652d' },
-  essayNoteContainer: { flexDirection: 'row', alignItems: 'center', marginTop: 12, padding: 10, backgroundColor: '#e8f0fe', borderRadius: 8, borderLeftWidth: 4, borderLeftColor: '#1967d2' },
-  essayNoteText: { flex: 1, fontSize: 13, color: '#00579b', marginLeft: 8, lineHeight: 18 },
-  pointsContainer: { alignItems: 'flex-end', marginTop: 12 },
-  scoreText: { fontSize: 14, fontWeight: '600' },
+  correctAnswerContainer: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    marginTop: isTablet ? 16 : 12, 
+    padding: isTablet ? 14 : 10, 
+    backgroundColor: '#fef3e2', 
+    borderRadius: 8, 
+    borderLeftWidth: 4, 
+    borderLeftColor: '#f39c12',
+    gap: 8,
+  },
+  correctAnswerLabel: { fontSize: isTablet ? 15 : 13, fontWeight: 'bold', color: '#b87a00' },
+  correctAnswerText: { fontSize: isTablet ? 17 : 15, color: '#8b5a00', fontWeight: '500' },
+  essayNoteContainer: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    marginTop: isTablet ? 16 : 12, 
+    padding: isTablet ? 14 : 10, 
+    backgroundColor: '#e8f0fe', 
+    borderRadius: 8, 
+    borderLeftWidth: 4, 
+    borderLeftColor: '#1967d2' 
+  },
+  essayNoteText: { 
+    flex: 1, 
+    fontSize: isTablet ? 15 : 13, 
+    color: '#00579b', 
+    marginLeft: 8, 
+    lineHeight: isTablet ? 22 : 18 
+  },
+  pointsContainer: { alignItems: 'flex-end', marginTop: isTablet ? 16 : 12 },
+  scoreText: { fontSize: isTablet ? 16 : 14, fontWeight: '600' },
   correctScore: { color: '#137333' },
   incorrectScore: { color: '#d93025' },
   pendingScore: { color: '#00579b', fontStyle: 'italic' },
-  backButton: { backgroundColor: '#1967d2', paddingVertical: 14, borderRadius: 8, alignItems: 'center', marginTop: 16 },
-  backButtonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+  backButton: { 
+    backgroundColor: '#1967d2', 
+    paddingVertical: isTablet ? 18 : 14, 
+    borderRadius: isTablet ? 10 : 8, 
+    alignItems: 'center', 
+    marginTop: isTablet ? 24 : 16 
+  },
+  backButtonText: { 
+    color: '#fff', 
+    fontSize: isTablet ? 18 : 16, 
+    fontWeight: '600' 
+  },
 });

@@ -170,6 +170,11 @@ const getMaterialColor = (type: string) => {
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 
+// Responsive design helper
+const isTablet = screenWidth >= 768;
+const isLargeTablet = screenWidth >= 1024;
+const contentMaxWidth = isLargeTablet ? 900 : isTablet ? 700 : screenWidth;
+
 export default function MaterialDetailsScreen() {
   const { id: courseId, materialId } = useLocalSearchParams();
   const { isConnected, netInfo } = useNetworkStatus();
@@ -629,10 +634,11 @@ export default function MaterialDetailsScreen() {
       const fileName = `${sanitizedTitle}_${materialDetail.id}${fileExtension ? `.${fileExtension}` : ''}`;
       const localUri = FileSystem.documentDirectory + fileName;
 
+      const authHeader = getAuthorizationHeader();
       const downloadResumable = FileSystem.createDownloadResumable(
         downloadUrl,
         localUri,
-        { headers: { Authorization: getAuthorizationHeader() } },
+        { headers: { Authorization: String(authHeader) } },
         ({ totalBytesWritten, totalBytesExpectedToWrite }) => {
           if (totalBytesExpectedToWrite > 0) {
             const progress = totalBytesWritten / totalBytesExpectedToWrite;
@@ -700,10 +706,11 @@ export default function MaterialDetailsScreen() {
     console.log('Downloading to temp file:', tempUri);
 
     try {
+      const authHeader = getAuthorizationHeader();
       const downloadResumable = FileSystem.createDownloadResumable(
         downloadUrl,
         tempUri, // Download to a local file:// cache URI
-        { headers: { Authorization: getAuthorizationHeader() } }
+        { headers: { Authorization: String(authHeader) } }
       );
 
       const result = await downloadResumable.downloadAsync();
@@ -997,14 +1004,10 @@ export default function MaterialDetailsScreen() {
         <View style={styles.downloadPromptContent}>
           <Ionicons name={getFileIcon(fileType)} size={48} color="#1967d2" />
           <Text style={styles.downloadPromptTitle}>
-            {fileType === 'pdf' || fileType === 'document' 
-              ? 'Preview in Browser Recommended' 
-              : 'Ready for Offline Access'}
+            Ready for Offline Access
           </Text>
           <Text style={styles.downloadPromptText}>
-            {fileType === 'pdf' || fileType === 'document'
-              ? 'For the best viewing experience, use the "Preview in Browser" button above. Or download for offline access.'
-              : 'Download this file to view it anytime, even without an internet connection.'}
+            Download this file to view it anytime, even without an internet connection.
           </Text>
 
           {fileSize && !isDownloading && (
@@ -1706,55 +1709,70 @@ export default function MaterialDetailsScreen() {
   );
 }
 
-// *** MODIFIED *** - Added new styles for the offline link notice
+// *** MODIFIED *** - Added new styles for the offline link notice and responsive design
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f8f9fa' },
+  container: { 
+    flex: 1, 
+    backgroundColor: '#f8f9fa',
+    alignItems: isTablet ? 'center' : 'stretch',
+  },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f8f9fa' },
-  loadingText: { marginTop: 16, fontSize: 16, color: '#5f6368' },
-  centeredContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 },
-  errorText: { fontSize: 16, color: '#d93025', textAlign: 'center', marginBottom: 20 },
-  retryButton: { backgroundColor: '#1967d2', paddingHorizontal: 24, paddingVertical: 12, borderRadius: 8 },
-  retryButtonText: { color: '#fff', fontSize: 16, fontWeight: '500' },
-  scrollViewContent: { paddingBottom: 24 },
+  loadingText: { marginTop: 16, fontSize: isTablet ? 18 : 16, color: '#5f6368' },
+  centeredContainer: { 
+    flex: 1, 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    padding: isTablet ? 40 : 20,
+    maxWidth: contentMaxWidth,
+  },
+  errorText: { fontSize: isTablet ? 18 : 16, color: '#d93025', textAlign: 'center', marginBottom: 20 },
+  retryButton: { backgroundColor: '#1967d2', paddingHorizontal: isTablet ? 32 : 24, paddingVertical: isTablet ? 14 : 12, borderRadius: 8 },
+  retryButtonText: { color: '#fff', fontSize: isTablet ? 18 : 16, fontWeight: '500' },
+  scrollViewContent: { 
+    paddingBottom: 24,
+    width: isTablet ? contentMaxWidth : '100%',
+    alignSelf: 'center',
+  },
 
   headerContainer: {
     backgroundColor: '#fff',
-    padding: 20,
+    padding: isTablet ? 32 : 20,
     borderBottomWidth: 1,
     borderBottomColor: '#e0e0e0',
+    width: '100%',
   },
   titleRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    marginBottom: 12,
+    gap: isTablet ? 16 : 12,
+    marginBottom: isTablet ? 16 : 12,
   },
   materialTypeBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingHorizontal: isTablet ? 16 : 12,
+    paddingVertical: isTablet ? 10 : 8,
     borderRadius: 8,
   },
   materialTypeText: {
     color: '#fff',
-    fontSize: 11,
+    fontSize: isTablet ? 13 : 11,
     fontWeight: '700',
     letterSpacing: 0.5,
   },
   materialTitle: {
     flex: 1,
-    fontSize: 22,
+    fontSize: isTablet ? 28 : 22,
     fontWeight: '600',
     color: '#202124',
     textAlign: 'left',
   },
   materialDescription: {
-    fontSize: 15,
+    fontSize: isTablet ? 17 : 15,
     color: '#5f6368',
     textAlign: 'left',
-    lineHeight: 22,
+    lineHeight: isTablet ? 26 : 22,
   },
   offlineNotice: {
     flexDirection: 'row',
@@ -1770,19 +1788,19 @@ const styles = StyleSheet.create({
   offlineText: { fontSize: 12, color: '#5f6368', fontWeight: '500' },
 
   sectionContainer: {
-    marginHorizontal: 16,
-    marginTop: 16,
+    marginHorizontal: isTablet ? 24 : 16,
+    marginTop: isTablet ? 24 : 16,
     backgroundColor: '#fff',
-    borderRadius: 8,
-    padding: 16,
+    borderRadius: isTablet ? 12 : 8,
+    padding: isTablet ? 24 : 16,
     borderWidth: 1,
     borderColor: '#e0e0e0',
   },
   sectionHeader: {
-    fontSize: 18,
+    fontSize: isTablet ? 22 : 18,
     fontWeight: '500',
     color: '#202124',
-    marginBottom: 16,
+    marginBottom: isTablet ? 20 : 16,
   },
 
   actionButtonsGrid: { gap: 12 },
@@ -1826,35 +1844,35 @@ const styles = StyleSheet.create({
   detailsGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 12,
+    gap: isTablet ? 16 : 12,
   },
   detailCard: {
     flex: 1,
-    minWidth: '45%',
+    minWidth: isTablet ? '30%' : '45%',
     backgroundColor: '#f8f9fa',
-    padding: 12,
-    borderRadius: 8,
+    padding: isTablet ? 16 : 12,
+    borderRadius: isTablet ? 10 : 8,
     alignItems: 'center',
     borderWidth: 1,
     borderColor: '#e0e0e0',
   },
   detailIconContainer: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: isTablet ? 50 : 40,
+    height: isTablet ? 50 : 40,
+    borderRadius: isTablet ? 25 : 20,
     backgroundColor: '#fff',
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 8,
+    marginBottom: isTablet ? 12 : 8,
   },
   detailLabel: {
-    fontSize: 12,
+    fontSize: isTablet ? 14 : 12,
     color: '#5f6368',
     marginBottom: 4,
     textAlign: 'center',
   },
   detailValue: {
-    fontSize: 14,
+    fontSize: isTablet ? 16 : 14,
     fontWeight: '600',
     color: '#202124',
     textAlign: 'center',
@@ -1883,46 +1901,60 @@ const styles = StyleSheet.create({
   },
 
   downloadPromptContainer: {
-    marginHorizontal: 16,
-    marginTop: 16,
+    marginHorizontal: isTablet ? 24 : 16,
+    marginTop: isTablet ? 24 : 16,
     backgroundColor: '#fff',
-    borderRadius: 8,
+    borderRadius: isTablet ? 12 : 8,
     borderWidth: 1,
     borderColor: '#e0e0e0',
   },
-  downloadPromptContent: { padding: 32, alignItems: 'center' },
+  downloadPromptContent: { 
+    padding: isTablet ? 48 : 32, 
+    alignItems: 'center' 
+  },
   downloadPromptTitle: {
-    fontSize: 20,
+    fontSize: isTablet ? 24 : 20,
     fontWeight: '500',
     color: '#202124',
-    marginTop: 16,
-    marginBottom: 8,
+    marginTop: isTablet ? 20 : 16,
+    marginBottom: isTablet ? 12 : 8,
   },
   downloadPromptText: {
-    fontSize: 14,
+    fontSize: isTablet ? 16 : 14,
     color: '#5f6368',
     textAlign: 'center',
-    marginBottom: 24,
-    lineHeight: 20,
+    marginBottom: isTablet ? 32 : 24,
+    lineHeight: isTablet ? 24 : 20,
   },
-  progressContainer: { alignItems: 'center', gap: 12 },
-  progressText: { fontSize: 16, fontWeight: '500', color: '#1967d2' },
+  progressContainer: { 
+    alignItems: 'center', 
+    gap: isTablet ? 16 : 12 
+  },
+  progressText: { 
+    fontSize: isTablet ? 18 : 16, 
+    fontWeight: '500', 
+    color: '#1967d2' 
+  },
   downloadPromptButton: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#1967d2',
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderRadius: 8,
-    gap: 8,
+    paddingVertical: isTablet ? 16 : 12,
+    paddingHorizontal: isTablet ? 32 : 24,
+    borderRadius: isTablet ? 10 : 8,
+    gap: isTablet ? 10 : 8,
   },
-  downloadPromptButtonText: { color: '#fff', fontSize: 16, fontWeight: '500' },
+  downloadPromptButtonText: { 
+    color: '#fff', 
+    fontSize: isTablet ? 18 : 16, 
+    fontWeight: '500' 
+  },
 
   inlineViewerContainer: {
-    marginHorizontal: 16,
-    marginTop: 16,
+    marginHorizontal: isTablet ? 24 : 16,
+    marginTop: isTablet ? 24 : 16,
     backgroundColor: '#fff',
-    borderRadius: 8,
+    borderRadius: isTablet ? 12 : 8,
     borderWidth: 1,
     borderColor: '#e0e0e0',
   },
@@ -1930,18 +1962,22 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: 12,
+    padding: isTablet ? 16 : 12,
     backgroundColor: '#f8f9fa',
     borderBottomWidth: 1,
     borderBottomColor: '#e0e0e0',
   },
-  viewerTitle: { fontSize: 16, fontWeight: '500', color: '#202124' },
-  viewerActions: { flexDirection: 'row', gap: 8 },
-  actionButton: { padding: 6 },
+  viewerTitle: { fontSize: isTablet ? 18 : 16, fontWeight: '500', color: '#202124' },
+  viewerActions: { flexDirection: 'row', gap: isTablet ? 12 : 8 },
+  actionButton: { padding: isTablet ? 8 : 6 },
   documentHeaderInfo: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 },
   codeHeaderInfo: { flexDirection: 'row', alignItems: 'center', gap: 8 },
 
-  imagePreview: { width: '100%', height: 300, backgroundColor: '#f8f9fa' },
+  imagePreview: { 
+    width: '100%', 
+    height: isTablet ? 450 : 300, 
+    backgroundColor: '#f8f9fa' 
+  },
   downloadedIndicator: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1952,16 +1988,24 @@ const styles = StyleSheet.create({
     borderTopColor: '#d0e5d6',
   },
   downloadedText: { fontSize: 12, color: '#137333', flex: 1 },
-  videoPlayer: { width: '100%', height: 250, backgroundColor: '#000' },
-  audioPlayerContainer: { padding: 48, alignItems: 'center', backgroundColor: '#f8f9fa' },
+  videoPlayer: { 
+    width: '100%', 
+    height: isTablet ? 400 : 250, 
+    backgroundColor: '#000' 
+  },
+  audioPlayerContainer: { 
+    padding: isTablet ? 64 : 48, 
+    alignItems: 'center', 
+    backgroundColor: '#f8f9fa' 
+  },
   audioFileName: {
-    fontSize: 16,
+    fontSize: isTablet ? 18 : 16,
     color: '#202124',
-    marginTop: 16,
-    marginBottom: 24,
+    marginTop: isTablet ? 20 : 16,
+    marginBottom: isTablet ? 32 : 24,
     textAlign: 'center',
   },
-  playButton: { padding: 10 },
+  playButton: { padding: isTablet ? 12 : 10 },
 
   genericFileContainer: { padding: 48, alignItems: 'center' },
   genericFileName: {

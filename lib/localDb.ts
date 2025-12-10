@@ -1925,6 +1925,7 @@ export const startOfflineQuiz = async (
     throw error;
   }
 };
+  
 
 export const getOfflineAttemptCount = async (assessmentId: number, userEmail: string): Promise<{
   attempts_made: number;
