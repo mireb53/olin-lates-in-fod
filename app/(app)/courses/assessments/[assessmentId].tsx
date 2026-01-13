@@ -4,6 +4,7 @@ import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as IntentLauncher from 'expo-intent-launcher';
+import * as MediaLibrary from 'expo-media-library';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import * as Sharing from 'expo-sharing';
 import React, { useCallback, useState } from 'react';
@@ -21,8 +22,10 @@ import {
     TouchableOpacity,
     View
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 // Import UI components
+import FileViewer, { detectFileType } from '../../../../components/FileViewer';
 import { SubmittedFileCard } from '../../../../components/ui';
 
 // Responsive design helper
@@ -343,6 +346,20 @@ export default function AssessmentDetailsScreen() {
   const [fileSize, setFileSize] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
+  // State for multiple downloaded files and in-app file viewer
+  interface DownloadedFileInfo {
+    uri: string;
+    fileName: string;
+    fileSize: number;
+    fileType: string;
+    downloadDate: string;
+    assessmentFileIndex?: number;
+  }
+  const [downloadedFiles, setDownloadedFiles] = useState<DownloadedFileInfo[]>([]);
+  const [activeFileViewerUri, setActiveFileViewerUri] = useState<string | null>(null);
+  const [activeFileViewerName, setActiveFileViewerName] = useState<string>('');
+  const [showFileViewer, setShowFileViewer] = useState(false);
+  const [currentDownloadingFileIndex, setCurrentDownloadingFileIndex] = useState<number | null>(null);
 
   usePendingSyncNotification(netInfo?.isInternetReachable ?? null, 'assessment-details');
 
@@ -364,13 +381,102 @@ export default function AssessmentDetailsScreen() {
 
     try {
       const fileInfo = await FileSystem.getInfoAsync(localUri);
-      if (fileInfo.exists && fileInfo.size > 0) {
+      if (fileInfo.exists && 'size' in fileInfo && fileInfo.size > 0) {
         setDownloadedFileUri(localUri);
         setFileSize(formatBytes(fileInfo.size));
-        setDownloadDate(new Date(fileInfo.modificationTime * 1000).toLocaleDateString());
+        // Safely handle modificationTime which may be undefined
+        const modTime = 'modificationTime' in fileInfo && fileInfo.modificationTime 
+          ? new Date(fileInfo.modificationTime * 1000).toLocaleDateString()
+          : 'Recently';
+        setDownloadDate(modTime);
       }
     } catch (error) {
       console.log('Error checking downloaded file:', error);
+    }
+  };
+
+  // Handle opening a file from the multiple files list
+  const handleOpenFileFromList = async (file: AssessmentFile, fileIndex: number) => {
+    if (!netInfo?.isInternetReachable) {
+      Alert.alert('Offline Mode', 'Internet connection required to download this file.');
+      return;
+    }
+
+    // Check if file is already downloaded
+    const existingDownload = downloadedFiles.find(d => d.assessmentFileIndex === fileIndex);
+    if (existingDownload) {
+      // Open in FileViewer
+      setActiveFileViewerUri(existingDownload.uri);
+      setActiveFileViewerName(existingDownload.fileName);
+      setShowFileViewer(true);
+      return;
+    }
+
+    // Download the file first
+    setCurrentDownloadingFileIndex(fileIndex);
+    setIsDownloading(true);
+    setDownloadProgress(0);
+
+    try {
+      const downloadUrl = `${api.defaults.baseURL}/assessments/${assessmentDetail?.id}/file/${fileIndex}`;
+      const fileExtension = file.extension;
+      const sanitizedName = file.original_name.replace(/[^a-zA-Z0-9.]/g, '_');
+      const fileName = `${sanitizedName}_${assessmentDetail?.id}_${fileIndex}${fileExtension ? `.${fileExtension}` : ''}`;
+      const localUri = FileSystem.documentDirectory + fileName;
+
+      console.log('Downloading assessment file from list:', downloadUrl);
+
+      const downloadResumable = FileSystem.createDownloadResumable(
+        downloadUrl,
+        localUri,
+        {}, // May need auth headers if protected
+        ({ totalBytesWritten, totalBytesExpectedToWrite }) => {
+          if (totalBytesExpectedToWrite > 0) {
+            const progress = totalBytesWritten / totalBytesExpectedToWrite;
+            setDownloadProgress(Math.round(progress * 100));
+          }
+        }
+      );
+
+      const result = await downloadResumable.downloadAsync();
+
+      if (result?.uri) {
+        const fileInfo = await FileSystem.getInfoAsync(result.uri);
+        
+        if (fileInfo.exists && 'size' in fileInfo && fileInfo.size > 0) {
+          // Add to downloaded files list
+          const newDownloadedFile: DownloadedFileInfo = {
+            uri: result.uri,
+            fileName: file.original_name,
+            fileSize: fileInfo.size,
+            fileType: detectFileType(file.original_name) || 'other',
+            downloadDate: new Date().toLocaleDateString(),
+            assessmentFileIndex: fileIndex,
+          };
+          
+          setDownloadedFiles(prev => [...prev, newDownloadedFile]);
+          
+          console.log('File downloaded successfully:', result.uri);
+          
+          // Open in FileViewer
+          setTimeout(() => {
+            setActiveFileViewerUri(result.uri);
+            setActiveFileViewerName(file.original_name);
+            setShowFileViewer(true);
+          }, 500);
+        } else {
+          throw new Error('Downloaded file is corrupted or empty.');
+        }
+      } else {
+        throw new Error('Download failed - no result URI.');
+      }
+    } catch (error: any) {
+      console.error('Error downloading assessment file from list:', error);
+      Alert.alert('Download Failed', error?.message || 'Failed to download file. Please try again.');
+    } finally {
+      setIsDownloading(false);
+      setDownloadProgress(0);
+      setCurrentDownloadingFileIndex(null);
     }
   };
 
@@ -393,8 +499,14 @@ export default function AssessmentDetailsScreen() {
   };
 
   const downloadToAppStorage = async () => {
-    if (!assessmentDetail?.assessment_file_url || !assessmentDetail?.id) return;
-    if (downloadedFileUri) return;
+    if (!assessmentDetail?.assessment_file_url || !assessmentDetail?.id) {
+      console.log('Download cancelled: Missing assessment_file_url or id');
+      return;
+    }
+    if (downloadedFileUri) {
+      console.log('Download cancelled: File already downloaded');
+      return;
+    }
 
     setIsDownloading(true);
     setDownloadProgress(0);
@@ -405,6 +517,8 @@ export default function AssessmentDetailsScreen() {
       const sanitizedTitle = assessmentDetail.title.replace(/[^a-zA-Z0-9]/g, '_');
       const fileName = `Assessment_${sanitizedTitle}_${assessmentDetail.id}.${fileExtension}`;
       const localUri = FileSystem.documentDirectory + fileName;
+
+      console.log('Starting download to:', localUri);
 
       const downloadResumable = FileSystem.createDownloadResumable(
         assessmentDetail.assessment_file_url,
@@ -422,64 +536,103 @@ export default function AssessmentDetailsScreen() {
 
       if (result?.uri) {
         const fileInfo = await FileSystem.getInfoAsync(result.uri);
-        setDownloadedFileUri(result.uri);
-        if (fileInfo.exists && 'size' in fileInfo) {
+        if (fileInfo.exists && 'size' in fileInfo && fileInfo.size > 0) {
+          setDownloadedFileUri(result.uri);
           setFileSize(formatBytes(fileInfo.size));
+          // Safely handle modificationTime which may be undefined
+          const modTime = 'modificationTime' in fileInfo && fileInfo.modificationTime 
+            ? new Date(fileInfo.modificationTime * 1000).toLocaleDateString()
+            : new Date().toLocaleDateString();
+          setDownloadDate(modTime);
+          console.log('Download complete:', result.uri);
+          Alert.alert('Download Complete!', 'Instructions available for offline viewing.');
+        } else {
+          throw new Error('Downloaded file is corrupted or empty.');
         }
-        setDownloadDate(new Date().toLocaleDateString());
-        Alert.alert('Download Complete!', 'Instructions available for offline viewing.');
+      } else {
+        throw new Error('Download failed - no result URI.');
       }
-    } catch (err) {
-      Alert.alert('Download Failed', 'Could not download the file.');
+    } catch (err: any) {
+      console.error('Download error:', err);
+      Alert.alert(
+        'Download Failed', 
+        err?.message || 'Could not download the file. Please try again.'
+      );
     } finally {
       setIsDownloading(false);
     }
   };
 
   const downloadToDeviceExternal = async () => {
-    if (!assessmentDetail?.assessment_file_url) return;
-    
-    // 1. Get Directory Permission
-    let directoryUri: string | null = null;
-    try {
-      const permissions = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
-      if (!permissions.granted) return;
-      directoryUri = permissions.directoryUri;
-    } catch (err) {
-      Alert.alert('Error', 'Could not get storage permissions.');
+    if (!assessmentDetail?.assessment_file_url) {
+      console.log('Save to Device cancelled: Missing assessment_file_url');
       return;
     }
+    
+    // Show progress
+    setIsDownloading(true);
+    setDownloadProgress(0);
 
-    // 2. Prep File Details
+    // Prep File Details
     const fileExtension = assessmentDetail.assessment_file_path?.split('.').pop() || 'pdf';
     const sanitizedTitle = assessmentDetail.title.replace(/[^a-zA-Z0-9]/g, '_');
     const fileName = `Assessment_${sanitizedTitle}_${assessmentDetail.id}.${fileExtension}`;
-    const mimeType = getMimeType(fileName);
-    
-    // 3. Download to Cache first
-    const tempUri = FileSystem.cacheDirectory + fileName;
     
     try {
-      const downloadResumable = FileSystem.createDownloadResumable(
-         assessmentDetail.assessment_file_url,
-         tempUri,
-         {}
-      );
-      const result = await downloadResumable.downloadAsync();
-      
-      if (result?.uri) {
-         // 4. Save to External Directory
-         const fileContent = await FileSystem.readAsStringAsync(result.uri, { encoding: FileSystem.EncodingType.Base64 });
-         const finalUri = await FileSystem.StorageAccessFramework.createFileAsync(directoryUri, fileName, mimeType);
-         await FileSystem.writeAsStringAsync(finalUri, fileContent, { encoding: FileSystem.EncodingType.Base64 });
-         
-         // Cleanup
-         await FileSystem.deleteAsync(tempUri, { idempotent: true });
-         
-         Alert.alert('Success', 'File saved to your device.');
+      // Request storage permission (for Android)
+      if (Platform.OS === 'android') {
+        const { status } = await MediaLibrary.requestPermissionsAsync();
+        if (status !== 'granted') {
+          setIsDownloading(false);
+          Alert.alert('Permission Required', 'Storage permission is needed to save files to your device.');
+          return;
+        }
       }
-    } catch (e) {
-      Alert.alert('Error', 'Failed to save file to device.');
+
+      // Download to cache first
+      const tempUri = FileSystem.cacheDirectory + fileName;
+      console.log('Downloading to temp file:', tempUri);
+
+      const downloadResumable = FileSystem.createDownloadResumable(
+        assessmentDetail.assessment_file_url,
+        tempUri,
+        {},
+        ({ totalBytesWritten, totalBytesExpectedToWrite }) => {
+          if (totalBytesExpectedToWrite > 0) {
+            const progress = totalBytesWritten / totalBytesExpectedToWrite;
+            setDownloadProgress(Math.round(progress * 100));
+          }
+        }
+      );
+
+      const result = await downloadResumable.downloadAsync();
+      if (!result || result.status !== 200) {
+        throw new Error('Download failed, server returned status ' + result?.status);
+      }
+
+      console.log('Temp download complete:', result.uri);
+
+      // Save to device's Downloads folder using MediaLibrary
+      const asset = await MediaLibrary.createAssetAsync(result.uri);
+      
+      // Clean up the temp file
+      await FileSystem.deleteAsync(tempUri, { idempotent: true });
+
+      console.log('File saved to device:', asset.uri);
+      Alert.alert(
+        'Download Complete', 
+        `"${assessmentDetail.title}" has been saved to your device's Downloads folder.`
+      );
+
+    } catch (err: any) {
+      console.error('Failed to download or save file:', err);
+      Alert.alert(
+        'Download Failed', 
+        err?.message || 'Could not save the file. Please try again.'
+      );
+    } finally {
+      setIsDownloading(false);
+      setDownloadProgress(0);
     }
   };
 
@@ -1601,46 +1754,87 @@ export default function AssessmentDetailsScreen() {
         {/* Multiple Assessment Files Section */}
         {isAssignmentType && assessmentDetail.files && assessmentDetail.files.length > 0 && (
           <View style={styles.sectionContainer}>
-            <Text style={styles.sectionHeader}>Assessment Files ({assessmentDetail.files.length})</Text>
+            <View style={styles.filesSectionHeader}>
+              <View style={styles.filesSectionTitleRow}>
+                <Ionicons name="documents" size={18} color="#4285f4" />
+                <Text style={styles.sectionHeaderText}>Assessment Files ({assessmentDetail.files.length})</Text>
+              </View>
+              {downloadedFiles.length > 0 && (
+                <View style={styles.downloadedBadge}>
+                  <Ionicons name="checkmark-circle" size={14} color="#16a34a" />
+                  <Text style={styles.downloadedBadgeText}>
+                    {downloadedFiles.length} downloaded
+                  </Text>
+                </View>
+              )}
+            </View>
             <View style={styles.filesListContainer}>
-              {assessmentDetail.files.map((file, index) => (
-                <View key={index} style={styles.assessmentFileCard}>
-                  <View style={[styles.assessmentFileIconContainer, { backgroundColor: getFileColorByExtension(file.extension) + '20' }]}>
-                    <Ionicons 
-                      name={getFileIconByExtension(file.extension) as any} 
-                      size={28} 
-                      color={getFileColorByExtension(file.extension)} 
-                    />
-                  </View>
-                  <View style={styles.assessmentFileInfoContainer}>
-                    <Text style={styles.assessmentFileNameText} numberOfLines={2}>{file.original_name}</Text>
-                    <Text style={styles.assessmentFileSizeText}>
-                      {formatBytes(file.size)} • {file.extension?.toUpperCase() || 'FILE'}
-                    </Text>
-                  </View>
+              {assessmentDetail.files.map((file, index) => {
+                const isDownloaded = downloadedFiles.some(d => d.assessmentFileIndex === index);
+                const isCurrentlyDownloading = currentDownloadingFileIndex === index;
+                
+                return (
                   <TouchableOpacity
-                    style={[styles.assessmentFileDownloadButton, !netInfo?.isInternetReachable && styles.assessmentFileDownloadButtonDisabled]}
+                    key={index}
+                    style={[
+                      styles.assessmentFileCard,
+                      isDownloaded && styles.assessmentFileCardDownloaded,
+                    ]}
                     onPress={() => {
-                      if (netInfo?.isInternetReachable && assessmentDetail.id) {
-                        // Construct download URL for this specific file
-                        const fileUrl = `${api.defaults.baseURL}/assessments/${assessmentDetail.id}/file/${index}`;
-                        Linking.openURL(fileUrl).catch(() => {
-                          Alert.alert('Error', 'Could not open the file.');
-                        });
+                      if (isDownloaded) {
+                        // Open in FileViewer
+                        const downloadedFile = downloadedFiles.find(d => d.assessmentFileIndex === index);
+                        if (downloadedFile) {
+                          setActiveFileViewerUri(downloadedFile.uri);
+                          setActiveFileViewerName(downloadedFile.fileName);
+                          setShowFileViewer(true);
+                        }
+                      } else if (netInfo?.isInternetReachable && assessmentDetail.id) {
+                        handleOpenFileFromList(file, index);
                       } else {
                         Alert.alert('Offline', 'You need to be online to download this file.');
                       }
                     }}
-                    disabled={!netInfo?.isInternetReachable}
+                    disabled={isCurrentlyDownloading}
                   >
-                    <Ionicons 
-                      name="download-outline" 
-                      size={20} 
-                      color={netInfo?.isInternetReachable ? '#4285f4' : '#9ca3af'} 
-                    />
+                    <View style={[
+                      styles.assessmentFileIconContainer, 
+                      { backgroundColor: isDownloaded ? '#dcfce720' : getFileColorByExtension(file.extension) + '20' }
+                    ]}>
+                      <Ionicons 
+                        name={getFileIconByExtension(file.extension) as any} 
+                        size={28} 
+                        color={isDownloaded ? '#16a34a' : getFileColorByExtension(file.extension)} 
+                      />
+                    </View>
+                    <View style={styles.assessmentFileInfoContainer}>
+                      <Text style={styles.assessmentFileNameText} numberOfLines={2}>{file.original_name}</Text>
+                      <View style={styles.fileItemMetaRow}>
+                        <Text style={styles.assessmentFileSizeText}>
+                          {formatBytes(file.size)} • {file.extension?.toUpperCase() || 'FILE'}
+                        </Text>
+                        {isDownloaded && (
+                          <View style={styles.offlineAvailableBadge}>
+                            <Ionicons name="cloud-done" size={12} color="#16a34a" />
+                            <Text style={styles.offlineAvailableText}>Offline</Text>
+                          </View>
+                        )}
+                      </View>
+                    </View>
+                    {isCurrentlyDownloading ? (
+                      <ActivityIndicator size="small" color="#4285f4" />
+                    ) : isDownloaded ? (
+                      <Ionicons name="eye-outline" size={22} color="#16a34a" />
+                    ) : (
+                      <Ionicons 
+                        name="download-outline" 
+                        size={20} 
+                        color={netInfo?.isInternetReachable ? '#4285f4' : '#9ca3af'} 
+                      />
+                    )}
                   </TouchableOpacity>
-                </View>
-              ))}
+                );
+              })}
             </View>
           </View>
         )}
@@ -2238,6 +2432,50 @@ export default function AssessmentDetailsScreen() {
             </TouchableOpacity>
           </View>
         </View>
+      </Modal>
+
+      {/* In-App FileViewer Modal */}
+      <Modal
+        visible={showFileViewer}
+        animationType="slide"
+        presentationStyle="fullScreen"
+        onRequestClose={() => setShowFileViewer(false)}
+      >
+        <SafeAreaView style={styles.fileViewerContainer}>
+          <View style={styles.fileViewerHeader}>
+            <TouchableOpacity
+              style={styles.fileViewerCloseButton}
+              onPress={() => setShowFileViewer(false)}
+            >
+              <Ionicons name="close" size={24} color="#1f2937" />
+            </TouchableOpacity>
+            <Text style={styles.fileViewerTitle} numberOfLines={1}>
+              {activeFileViewerName}
+            </Text>
+            <TouchableOpacity
+              style={styles.fileViewerShareButton}
+              onPress={async () => {
+                if (activeFileViewerUri && await Sharing.isAvailableAsync()) {
+                  await Sharing.shareAsync(activeFileViewerUri);
+                }
+              }}
+            >
+              <Ionicons name="share-outline" size={24} color="#1f2937" />
+            </TouchableOpacity>
+          </View>
+          <View style={styles.fileViewerContent}>
+            {activeFileViewerUri && (
+              <FileViewer
+                uri={activeFileViewerUri}
+                fileName={activeFileViewerName}
+                isCached={true}
+                onClose={() => setShowFileViewer(false)}
+                fullscreen={true}
+                isOnline={netInfo?.isInternetReachable || false}
+              />
+            )}
+          </View>
+        </SafeAreaView>
       </Modal>
     </View>
   );
@@ -2871,6 +3109,92 @@ const styles = StyleSheet.create({
   },
   assessmentFileDownloadButtonDisabled: {
     backgroundColor: '#f1f3f4',
+  },
+  assessmentFileCardDownloaded: {
+    backgroundColor: '#f0fdf4',
+    borderColor: '#86efac',
+  },
+  // Multiple Files Section Styles
+  filesSectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: isTablet ? 14 : 12,
+  },
+  filesSectionTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: isTablet ? 10 : 8,
+  },
+  sectionHeaderText: {
+    fontSize: isTablet ? 18 : 16,
+    fontWeight: '600',
+    color: '#4285f4',
+  },
+  downloadedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#dcfce7',
+    paddingHorizontal: isTablet ? 10 : 8,
+    paddingVertical: isTablet ? 5 : 4,
+    borderRadius: 12,
+  },
+  downloadedBadgeText: {
+    fontSize: isTablet ? 13 : 12,
+    fontWeight: '500',
+    color: '#16a34a',
+  },
+  fileItemMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: isTablet ? 10 : 8,
+  },
+  offlineAvailableBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    backgroundColor: '#dcfce7',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+  },
+  offlineAvailableText: {
+    fontSize: 10,
+    fontWeight: '500',
+    color: '#16a34a',
+  },
+  // FileViewer Modal Styles
+  fileViewerContainer: {
+    flex: 1,
+    backgroundColor: '#f8f9fa',
+  },
+  fileViewerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: isTablet ? 20 : 16,
+    paddingVertical: isTablet ? 14 : 12,
+    backgroundColor: '#fff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e5e7eb',
+  },
+  fileViewerCloseButton: {
+    padding: isTablet ? 10 : 8,
+  },
+  fileViewerTitle: {
+    flex: 1,
+    fontSize: isTablet ? 18 : 16,
+    fontWeight: '600',
+    color: '#1f2937',
+    marginHorizontal: isTablet ? 14 : 12,
+    textAlign: 'center',
+  },
+  fileViewerShareButton: {
+    padding: isTablet ? 10 : 8,
+  },
+  fileViewerContent: {
+    flex: 1,
   },
   // Multiple Assessment Links List Styles
   linksListContainer: {

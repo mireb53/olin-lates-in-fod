@@ -26,10 +26,21 @@ import { WebView } from 'react-native-webview';
 import { getCompletedOfflineQuizzes, getMaterialDetailsFromDb, getUnsyncedSubmissions } from '@/lib/localDb';
 import { syncAllOfflineData } from '@/lib/offlineSync';
 import * as IntentLauncher from 'expo-intent-launcher';
+import FileViewer, { detectFileType } from '../../../../components/FileViewer';
 import DownloadProgressOverlay from '../../../../components/ui/DownloadProgressOverlay';
 import FileActionSheet from '../../../../components/ui/FileActionSheet';
 import { useNetworkStatus } from '../../../../context/NetworkContext';
 import api, { getAuthorizationHeader, getUserData, initializeAuth } from '../../../../lib/api';
+
+// Downloaded file tracking interface
+interface DownloadedFileInfo {
+  uri: string;
+  fileName: string;
+  fileSize: number;
+  fileType: string;
+  downloadDate: string;
+  materialFileIndex?: number;
+}
 
 // File item in the files array
 interface MaterialFile {
@@ -274,6 +285,13 @@ export default function MaterialDetailsScreen() {
   const [downloadStatus, setDownloadStatus] = useState<'downloading' | 'processing' | 'complete' | 'error'>('downloading');
   const [downloadedBytes, setDownloadedBytes] = useState(0);
   const [totalBytes, setTotalBytes] = useState(0);
+
+  // State for multiple downloaded files
+  const [downloadedFiles, setDownloadedFiles] = useState<DownloadedFileInfo[]>([]);
+  const [activeFileViewerUri, setActiveFileViewerUri] = useState<string | null>(null);
+  const [activeFileViewerName, setActiveFileViewerName] = useState<string>('');
+  const [showFileViewer, setShowFileViewer] = useState(false);
+  const [currentDownloadingFileIndex, setCurrentDownloadingFileIndex] = useState<number | null>(null);
 
   useEffect(() => {
     initializeAuth();
@@ -657,57 +675,18 @@ export default function MaterialDetailsScreen() {
       return;
     }
 
-    try {
-      // Generate signed URL for the specific file
-      const response = await api.post(`/materials/${materialDetail?.id}/generate-link`, {
-        file_index: fileIndex
-      });
-      
-      if (response.data && response.data.url) {
-        const signedUrl = response.data.url;
-        const extension = file.extension?.toLowerCase();
-        
-        // PDF Files -> Use Google Docs Viewer
-        if (extension === 'pdf') {
-          const viewerUrl = `https://docs.google.com/viewer?url=${encodeURIComponent(signedUrl)}&embedded=true`;
-          await Linking.openURL(viewerUrl);
-        }
-        // Office Documents -> Use Microsoft Office Online Viewer
-        else if (extension && ['doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx'].includes(extension)) {
-          const viewerUrl = `https://view.officeapps.live.com/op/view.aspx?src=${encodeURIComponent(signedUrl)}`;
-          await Linking.openURL(viewerUrl);
-        }
-        // Other files -> Direct download
-        else {
-          await Linking.openURL(signedUrl);
-        }
-      } else {
-        Alert.alert('Error', 'Failed to generate download link.');
-      }
-    } catch (error) {
-      console.error('Error opening file from list:', error);
-      Alert.alert('Error', 'Failed to open file. Please try again.');
-    }
-  };
-
-  const promptDownloadOptions = async () => {
-    if (!netInfo?.isInternetReachable) {
-      Alert.alert('Offline Mode', 'File downloading requires an internet connection.');
+    // Check if file is already downloaded
+    const existingDownload = downloadedFiles.find(d => d.materialFileIndex === fileIndex);
+    if (existingDownload) {
+      // Open in FileViewer
+      setActiveFileViewerUri(existingDownload.uri);
+      setActiveFileViewerName(existingDownload.fileName);
+      setShowFileViewer(true);
       return;
     }
 
-    // Show the beautiful action sheet instead of Alert
-    setShowActionSheet(true);
-  };
-
-  const downloadToAppStorage = async () => {
-    if (!materialDetail?.file_path || !materialDetail?.id) return;
-    if (!netInfo?.isInternetReachable) {
-      Alert.alert('Offline Mode', 'File downloading requires an internet connection.');
-      return;
-    }
-    if (downloadedFileUri) return;
-
+    // Download the file first
+    setCurrentDownloadingFileIndex(fileIndex);
     setIsDownloading(true);
     setDownloadProgress(0);
     setDownloadedBytes(0);
@@ -716,20 +695,19 @@ export default function MaterialDetailsScreen() {
     setShowDownloadOverlay(true);
 
     try {
-      const { status } = await MediaLibrary.requestPermissionsAsync();
-      if (status !== 'granted') {
-        setIsDownloading(false);
-        setShowDownloadOverlay(false);
-        return;
-      }
-
-      const downloadUrl = `${api.defaults.baseURL}/materials/${materialDetail.id}/view`;
-      const fileExtension = materialDetail.file_path.split('.').pop();
-      const sanitizedTitle = materialDetail.title.replace(/[^a-zA-Z0-9]/g, '_');
-      const fileName = `${sanitizedTitle}_${materialDetail.id}${fileExtension ? `.${fileExtension}` : ''}`;
+      const downloadUrl = `${api.defaults.baseURL}/materials/${materialDetail?.id}/view?file_index=${fileIndex}`;
+      const fileExtension = file.extension;
+      const sanitizedName = file.original_name.replace(/[^a-zA-Z0-9.]/g, '_');
+      const fileName = `${sanitizedName}_${materialDetail?.id}_${fileIndex}${fileExtension ? `.${fileExtension}` : ''}`;
       const localUri = FileSystem.documentDirectory + fileName;
 
+      console.log('Downloading file from list:', downloadUrl);
+
       const authHeader = getAuthorizationHeader();
+      if (!authHeader) {
+        throw new Error('Authentication required. Please login again.');
+      }
+
       const downloadResumable = FileSystem.createDownloadResumable(
         downloadUrl,
         localUri,
@@ -749,11 +727,131 @@ export default function MaterialDetailsScreen() {
       if (result?.uri) {
         setDownloadStatus('processing');
         const fileInfo = await FileSystem.getInfoAsync(result.uri);
-        if (fileInfo.exists && fileInfo.size > 0) {
+        
+        if (fileInfo.exists && 'size' in fileInfo && fileInfo.size > 0) {
+          // Add to downloaded files list
+          const newDownloadedFile: DownloadedFileInfo = {
+            uri: result.uri,
+            fileName: file.original_name,
+            fileSize: fileInfo.size,
+            fileType: detectFileType(file.original_name) || 'other',
+            downloadDate: new Date().toLocaleDateString(),
+            materialFileIndex: fileIndex,
+          };
+          
+          setDownloadedFiles(prev => [...prev, newDownloadedFile]);
+          setDownloadStatus('complete');
+          
+          console.log('File downloaded successfully:', result.uri);
+          
+          // Auto close and open viewer
+          setTimeout(() => {
+            setShowDownloadOverlay(false);
+            setActiveFileViewerUri(result.uri);
+            setActiveFileViewerName(file.original_name);
+            setShowFileViewer(true);
+          }, 1000);
+        } else {
+          throw new Error('Downloaded file is corrupted or empty.');
+        }
+      } else {
+        throw new Error('Download failed - no result URI.');
+      }
+    } catch (error: any) {
+      console.error('Error downloading file from list:', error);
+      setDownloadStatus('error');
+      setTimeout(() => {
+        setShowDownloadOverlay(false);
+        Alert.alert('Download Failed', error?.message || 'Failed to download file. Please try again.');
+      }, 2000);
+    } finally {
+      setIsDownloading(false);
+      setDownloadProgress(0);
+      setCurrentDownloadingFileIndex(null);
+    }
+  };
+
+  const promptDownloadOptions = async () => {
+    if (!netInfo?.isInternetReachable) {
+      Alert.alert('Offline Mode', 'File downloading requires an internet connection.');
+      return;
+    }
+
+    // Show the beautiful action sheet instead of Alert
+    setShowActionSheet(true);
+  };
+
+  const downloadToAppStorage = async () => {
+    if (!materialDetail?.file_path || !materialDetail?.id) {
+      console.log('Download cancelled: Missing file_path or id');
+      return;
+    }
+    if (!netInfo?.isInternetReachable) {
+      Alert.alert('Offline Mode', 'File downloading requires an internet connection.');
+      return;
+    }
+    if (downloadedFileUri) {
+      console.log('Download cancelled: File already downloaded');
+      return;
+    }
+
+    // Close action sheet first
+    setShowActionSheet(false);
+
+    setIsDownloading(true);
+    setDownloadProgress(0);
+    setDownloadedBytes(0);
+    setTotalBytes(0);
+    setDownloadStatus('downloading');
+    setShowDownloadOverlay(true);
+
+    try {
+      // Note: MediaLibrary permission is NOT needed for saving to app's documentDirectory
+      // Only needed if we want to save to the device's photo/media library
+      
+      const downloadUrl = `${api.defaults.baseURL}/materials/${materialDetail.id}/view`;
+      const fileExtension = materialDetail.file_path.split('.').pop();
+      const sanitizedTitle = materialDetail.title.replace(/[^a-zA-Z0-9]/g, '_');
+      const fileName = `${sanitizedTitle}_${materialDetail.id}${fileExtension ? `.${fileExtension}` : ''}`;
+      const localUri = FileSystem.documentDirectory + fileName;
+
+      console.log('Starting download to:', localUri);
+
+      const authHeader = getAuthorizationHeader();
+      if (!authHeader) {
+        throw new Error('Authentication required. Please login again.');
+      }
+
+      const downloadResumable = FileSystem.createDownloadResumable(
+        downloadUrl,
+        localUri,
+        { headers: { Authorization: String(authHeader) } },
+        ({ totalBytesWritten, totalBytesExpectedToWrite }) => {
+          if (totalBytesExpectedToWrite > 0) {
+            const progress = totalBytesWritten / totalBytesExpectedToWrite;
+            setDownloadProgress(Math.round(progress * 100));
+            setDownloadedBytes(totalBytesWritten);
+            setTotalBytes(totalBytesExpectedToWrite);
+          }
+        }
+      );
+
+      const result = await downloadResumable.downloadAsync();
+
+      if (result?.uri) {
+        setDownloadStatus('processing');
+        const fileInfo = await FileSystem.getInfoAsync(result.uri);
+        if (fileInfo.exists && 'size' in fileInfo && fileInfo.size > 0) {
           setDownloadedFileUri(result.uri);
           setFileSize(formatBytes(fileInfo.size));
-          setDownloadDate(new Date(fileInfo.modificationTime * 1000).toLocaleDateString());
+          // Safely handle modificationTime which may be undefined
+          const modTime = 'modificationTime' in fileInfo && fileInfo.modificationTime 
+            ? new Date(fileInfo.modificationTime * 1000).toLocaleDateString()
+            : new Date().toLocaleDateString();
+          setDownloadDate(modTime);
           setDownloadStatus('complete');
+          
+          console.log('Download complete:', result.uri);
           
           // Auto close after success
           setTimeout(() => {
@@ -763,13 +861,17 @@ export default function MaterialDetailsScreen() {
           throw new Error('Downloaded file is corrupted or empty.');
         }
       } else {
-        throw new Error('Download failed.');
+        throw new Error('Download failed - no result URI.');
       }
-    } catch (err) {
+    } catch (err: any) {
+      console.error('Download error:', err);
       setDownloadStatus('error');
       setTimeout(() => {
         setShowDownloadOverlay(false);
-        Alert.alert('Download Failed', 'Could not download the file. Please try again.');
+        Alert.alert(
+          'Download Failed', 
+          err?.message || 'Could not download the file. Please try again.'
+        );
       }, 2000);
     } finally {
       setIsDownloading(false);
@@ -778,46 +880,66 @@ export default function MaterialDetailsScreen() {
   };
 
   const downloadToDeviceExternal = async () => {
-    if (!materialDetail?.file_path || !materialDetail?.id) return;
+    if (!materialDetail?.file_path || !materialDetail?.id) {
+      console.log('Save to Device cancelled: Missing file_path or id');
+      return;
+    }
     if (!netInfo?.isInternetReachable) {
       Alert.alert('Offline Mode', 'File downloading requires an internet connection.');
       return;
     }
 
-    // 1. Get directory permissions (This part was working correctly)
-    let directoryUri: string | null = null;
-    try {
-      const permissions = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
-      if (!permissions.granted) {
-        Alert.alert('Permission Required', 'We need permission to save files to your device.');
-        return;
-      }
-      directoryUri = permissions.directoryUri;
-    } catch (err) {
-      console.error('Failed to get directory permissions', err);
-      Alert.alert('Error', 'Could not get storage permissions.');
-      return;
-    }
+    // Close action sheet first
+    setShowActionSheet(false);
+    
+    // Show download overlay
+    setIsDownloading(true);
+    setDownloadProgress(0);
+    setDownloadedBytes(0);
+    setTotalBytes(0);
+    setDownloadStatus('downloading');
+    setShowDownloadOverlay(true);
 
-    // --- START: NEW, MORE RELIABLE LOGIC ---
-
-    // 2. Set up file details
+    // Set up file details
     const downloadUrl = `${api.defaults.baseURL}/materials/${materialDetail.id}/view`;
     const fileExtension = materialDetail.file_path.split('.').pop();
     const sanitizedTitle = materialDetail.title.replace(/[^a-zA-Z0-9]/g, '_');
     const fileName = `${sanitizedTitle}_${materialDetail.id}${fileExtension ? `.${fileExtension}` : ''}`;
     const mimeType = getMimeType(materialDetail.file_path);
 
-    // 3. Download to a *temporary* file first
-    const tempUri = FileSystem.cacheDirectory + fileName;
-    console.log('Downloading to temp file:', tempUri);
-
     try {
+      // Request storage permission (for Android)
+      if (Platform.OS === 'android') {
+        const { status } = await MediaLibrary.requestPermissionsAsync();
+        if (status !== 'granted') {
+          setShowDownloadOverlay(false);
+          setIsDownloading(false);
+          Alert.alert('Permission Required', 'Storage permission is needed to save files to your device.');
+          return;
+        }
+      }
+
+      // Download to cache first
+      const tempUri = FileSystem.cacheDirectory + fileName;
+      console.log('Downloading to temp file:', tempUri);
+
       const authHeader = getAuthorizationHeader();
+      if (!authHeader) {
+        throw new Error('Authentication required. Please login again.');
+      }
+
       const downloadResumable = FileSystem.createDownloadResumable(
         downloadUrl,
-        tempUri, // Download to a local file:// cache URI
-        { headers: { Authorization: String(authHeader) } }
+        tempUri,
+        { headers: { Authorization: String(authHeader) } },
+        ({ totalBytesWritten, totalBytesExpectedToWrite }) => {
+          if (totalBytesExpectedToWrite > 0) {
+            const progress = totalBytesWritten / totalBytesExpectedToWrite;
+            setDownloadProgress(Math.round(progress * 100));
+            setDownloadedBytes(totalBytesWritten);
+            setTotalBytes(totalBytesExpectedToWrite);
+          }
+        }
       );
 
       const result = await downloadResumable.downloadAsync();
@@ -826,36 +948,49 @@ export default function MaterialDetailsScreen() {
       }
 
       console.log('Temp download complete:', result.uri);
+      setDownloadStatus('processing');
 
-      // 4. Now, move the file to the user's chosen directory
-
-      // Read the temp file as base64
-      const fileContentBase64 = await FileSystem.readAsStringAsync(result.uri, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
-
-      // 5. Create the *final* file in the selected directory
-      const finalFileUri = await FileSystem.StorageAccessFramework.createFileAsync(directoryUri, fileName, mimeType);
-
-      // 6. Write the base64 content to the new file
-      await FileSystem.writeAsStringAsync(finalFileUri, fileContentBase64, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
-
-      // 7. Clean up the temp file
+      // Save to device's Downloads folder using MediaLibrary
+      // This automatically saves to the Downloads folder on Android
+      const asset = await MediaLibrary.createAssetAsync(result.uri);
+      
+      // Clean up the temp file
       await FileSystem.deleteAsync(tempUri, { idempotent: true });
 
-      Alert.alert('Download Complete', `File "${fileName}" saved to your selected folder.`);
-    } catch (err) {
-      console.error('Failed to download or save file:', err);
-      Alert.alert('Download Failed', 'Could not save the file. Please try again.');
+      setDownloadStatus('complete');
+      console.log('File saved to device:', asset.uri);
+      
+      // Auto close after success
+      setTimeout(() => {
+        setShowDownloadOverlay(false);
+        Alert.alert(
+          'Download Complete', 
+          `"${materialDetail.title}" has been saved to your device's Downloads folder.`
+        );
+      }, 1500);
 
-      // Clean up the temp file on error
+    } catch (err: any) {
+      console.error('Failed to download or save file:', err);
+      setDownloadStatus('error');
+      
+      // Clean up temp file on error
       try {
+        const tempUri = FileSystem.cacheDirectory + fileName;
         await FileSystem.deleteAsync(tempUri, { idempotent: true });
       } catch (deleteErr) {
         console.error('Failed to delete temp file on error:', deleteErr);
       }
+
+      setTimeout(() => {
+        setShowDownloadOverlay(false);
+        Alert.alert(
+          'Download Failed', 
+          err?.message || 'Could not save the file. Please try again.'
+        );
+      }, 2000);
+    } finally {
+      setIsDownloading(false);
+      setDownloadProgress(0);
     }
   };
 
@@ -1786,39 +1921,83 @@ export default function MaterialDetailsScreen() {
         {/* Multiple Files Section */}
         {materialDetail.files && materialDetail.files.length > 0 && (
           <View style={styles.sectionContainer}>
-            <Text style={styles.sectionHeader}>
-              <Ionicons name="documents" size={18} color="#1967d2" /> Files ({materialDetail.files.length})
-            </Text>
+            <View style={styles.filesSectionHeader}>
+              <View style={styles.filesSectionTitleRow}>
+                <Ionicons name="documents" size={18} color="#1967d2" />
+                <Text style={styles.sectionHeaderText}>Files ({materialDetail.files.length})</Text>
+              </View>
+              {downloadedFiles.length > 0 && (
+                <View style={styles.downloadedBadge}>
+                  <Ionicons name="checkmark-circle" size={14} color="#16a34a" />
+                  <Text style={styles.downloadedBadgeText}>
+                    {downloadedFiles.length} downloaded
+                  </Text>
+                </View>
+              )}
+            </View>
             <View style={styles.filesListContainer}>
-              {materialDetail.files.map((file, index) => (
-                <TouchableOpacity 
-                  key={index} 
-                  style={styles.fileItemCard}
-                  onPress={() => {
-                    if (netInfo?.isInternetReachable) {
-                      // Generate signed URL and open file
-                      handleOpenFileFromList(file, index);
-                    } else {
-                      Alert.alert('Offline', 'Internet connection required to download this file.');
-                    }
-                  }}
-                >
-                  <View style={styles.fileItemIcon}>
-                    <Ionicons 
-                      name={getFileIconByExtension(file.extension) as any} 
-                      size={24} 
-                      color={getFileColorByExtension(file.extension)} 
-                    />
-                  </View>
-                  <View style={styles.fileItemInfo}>
-                    <Text style={styles.fileItemName} numberOfLines={1}>{file.original_name}</Text>
-                    <Text style={styles.fileItemMeta}>
-                      {file.extension?.toUpperCase()} • {formatBytes(file.size)}
-                    </Text>
-                  </View>
-                  <Ionicons name="download-outline" size={22} color="#1967d2" />
-                </TouchableOpacity>
-              ))}
+              {materialDetail.files.map((file, index) => {
+                const isDownloaded = downloadedFiles.some(d => d.materialFileIndex === index);
+                const isCurrentlyDownloading = currentDownloadingFileIndex === index;
+                
+                return (
+                  <TouchableOpacity 
+                    key={index} 
+                    style={[
+                      styles.fileItemCard,
+                      isDownloaded && styles.fileItemCardDownloaded,
+                    ]}
+                    onPress={() => {
+                      if (isDownloaded) {
+                        // Open in FileViewer
+                        const downloadedFile = downloadedFiles.find(d => d.materialFileIndex === index);
+                        if (downloadedFile) {
+                          setActiveFileViewerUri(downloadedFile.uri);
+                          setActiveFileViewerName(downloadedFile.fileName);
+                          setShowFileViewer(true);
+                        }
+                      } else if (netInfo?.isInternetReachable) {
+                        handleOpenFileFromList(file, index);
+                      } else {
+                        Alert.alert('Offline', 'Internet connection required to download this file.');
+                      }
+                    }}
+                    disabled={isCurrentlyDownloading}
+                  >
+                    <View style={[
+                      styles.fileItemIcon,
+                      isDownloaded && styles.fileItemIconDownloaded,
+                    ]}>
+                      <Ionicons 
+                        name={getFileIconByExtension(file.extension) as any} 
+                        size={24} 
+                        color={isDownloaded ? '#16a34a' : getFileColorByExtension(file.extension)} 
+                      />
+                    </View>
+                    <View style={styles.fileItemInfo}>
+                      <Text style={styles.fileItemName} numberOfLines={1}>{file.original_name}</Text>
+                      <View style={styles.fileItemMetaRow}>
+                        <Text style={styles.fileItemMeta}>
+                          {file.extension?.toUpperCase()} • {formatBytes(file.size)}
+                        </Text>
+                        {isDownloaded && (
+                          <View style={styles.offlineAvailableBadge}>
+                            <Ionicons name="cloud-done" size={12} color="#16a34a" />
+                            <Text style={styles.offlineAvailableText}>Offline</Text>
+                          </View>
+                        )}
+                      </View>
+                    </View>
+                    {isCurrentlyDownloading ? (
+                      <ActivityIndicator size="small" color="#1967d2" />
+                    ) : isDownloaded ? (
+                      <Ionicons name="eye-outline" size={22} color="#16a34a" />
+                    ) : (
+                      <Ionicons name="download-outline" size={22} color="#1967d2" />
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
             </View>
           </View>
         )}
@@ -1937,8 +2116,8 @@ export default function MaterialDetailsScreen() {
           </View>
         )}
 
-        {/* *** MODIFIED *** - External Link Section now handles offline state gracefully */}
-        {materialDetail.material_type?.toLowerCase() === 'link' && materialDetail.file_path && (
+        {/* *** MODIFIED *** - External Link Section - Only show if NO links array exists (legacy single link) */}
+        {materialDetail.material_type?.toLowerCase() === 'link' && materialDetail.file_path && (!materialDetail.links || materialDetail.links.length === 0) && (
           <View style={styles.sectionContainer}>
             <Text style={styles.sectionHeader}>External Link</Text>
             <TouchableOpacity style={styles.linkClickableContainer} onPress={() => handleOpenLink(materialDetail.file_path!)}>
@@ -2055,6 +2234,50 @@ export default function MaterialDetailsScreen() {
           setIsDownloading(false);
         }}
       />
+
+      {/* In-App FileViewer Modal */}
+      <Modal
+        visible={showFileViewer}
+        animationType="slide"
+        presentationStyle="fullScreen"
+        onRequestClose={() => setShowFileViewer(false)}
+      >
+        <SafeAreaView style={styles.fileViewerContainer}>
+          <View style={styles.fileViewerHeader}>
+            <TouchableOpacity
+              style={styles.fileViewerCloseButton}
+              onPress={() => setShowFileViewer(false)}
+            >
+              <Ionicons name="close" size={24} color="#1f2937" />
+            </TouchableOpacity>
+            <Text style={styles.fileViewerTitle} numberOfLines={1}>
+              {activeFileViewerName}
+            </Text>
+            <TouchableOpacity
+              style={styles.fileViewerShareButton}
+              onPress={async () => {
+                if (activeFileViewerUri && await Sharing.isAvailableAsync()) {
+                  await Sharing.shareAsync(activeFileViewerUri);
+                }
+              }}
+            >
+              <Ionicons name="share-outline" size={24} color="#1f2937" />
+            </TouchableOpacity>
+          </View>
+          <View style={styles.fileViewerContent}>
+            {activeFileViewerUri && (
+              <FileViewer
+                uri={activeFileViewerUri}
+                fileName={activeFileViewerName}
+                isCached={true}
+                onClose={() => setShowFileViewer(false)}
+                fullscreen={true}
+                isOnline={netInfo?.isInternetReachable || false}
+              />
+            )}
+          </View>
+        </SafeAreaView>
+      </Modal>
     </View>
   );
 }
@@ -2471,6 +2694,36 @@ const styles = StyleSheet.create({
   },
   
   // Multiple Files Section Styles
+  filesSectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  filesSectionTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  sectionHeaderText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1967d2',
+  },
+  downloadedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#dcfce7',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  downloadedBadgeText: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: '#16a34a',
+  },
   filesListContainer: {
     gap: 8,
   },
@@ -2483,6 +2736,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#bfdbfe',
   },
+  fileItemCardDownloaded: {
+    backgroundColor: '#f0fdf4',
+    borderColor: '#86efac',
+  },
   fileItemIcon: {
     width: 44,
     height: 44,
@@ -2491,6 +2748,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
+  },
+  fileItemIconDownloaded: {
+    backgroundColor: '#dcfce7',
   },
   fileItemInfo: {
     flex: 1,
@@ -2505,6 +2765,25 @@ const styles = StyleSheet.create({
   fileItemMeta: {
     fontSize: 12,
     color: '#6b7280',
+  },
+  fileItemMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  offlineAvailableBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    backgroundColor: '#dcfce7',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+  },
+  offlineAvailableText: {
+    fontSize: 10,
+    fontWeight: '500',
+    color: '#16a34a',
   },
   
   // Multiple Links Section Styles
@@ -2611,5 +2890,37 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: '#4285f4',
     marginTop: 2,
+  },
+  // FileViewer Modal styles
+  fileViewerContainer: {
+    flex: 1,
+    backgroundColor: '#f8f9fa',
+  },
+  fileViewerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: '#fff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e5e7eb',
+  },
+  fileViewerCloseButton: {
+    padding: 8,
+  },
+  fileViewerTitle: {
+    flex: 1,
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1f2937',
+    marginHorizontal: 12,
+    textAlign: 'center',
+  },
+  fileViewerShareButton: {
+    padding: 8,
+  },
+  fileViewerContent: {
+    flex: 1,
   },
 });
