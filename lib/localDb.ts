@@ -53,9 +53,12 @@ type TimeCheckRecord = {
 // Add this type definition near the top of your file
 type StudentAnswers = {
   [questionId: number]: {
-    type: 'multiple_choice' | 'true_false' | 'essay' | 'identification';
-    answer: string | number[];
+    type: 'multiple_choice' | 'true_false' | 'essay' | 'identification' | 'enumeration';
+    answer: string | number[] | string[]; // Added string[] for enumeration
     isDirty?: boolean;
+    submitted_answer?: string | null;
+    is_correct?: boolean | null;
+    score_earned?: number | null;
   };
 };
 
@@ -339,13 +342,16 @@ export const initDb = async (): Promise<void> => {
               FOREIGN KEY (assessment_id, user_email) REFERENCES offline_assessments(id, user_email) ON DELETE CASCADE
             );`,
             
-            // 8. offline_submissions
+            // 8. offline_submissions - Updated to support multiple files
+            // files_json stores JSON array: [{uri, name, type, size}, ...]
+            // file_uri and original_filename kept for backward compatibility
             `CREATE TABLE IF NOT EXISTS offline_submissions (
               id INTEGER PRIMARY KEY AUTOINCREMENT, 
               user_email TEXT NOT NULL, 
               assessment_id INTEGER NOT NULL, 
               file_uri TEXT NOT NULL, 
               original_filename TEXT NOT NULL, 
+              files_json TEXT,
               submission_status TEXT NOT NULL, 
               submitted_at TEXT NOT NULL,
               UNIQUE(user_email, assessment_id) ON CONFLICT REPLACE,
@@ -1257,6 +1263,58 @@ export const saveOfflineSubmission = async (
     return finalSubmittedAt; // Return the timestamp that was used
   } catch (error) {
     console.error('âŒ Failed to save offline submission:', error);
+    throw error;
+  }
+};
+
+// Interface for multiple file support
+export interface OfflineSubmissionFile {
+  uri: string;
+  name: string;
+  type?: string;
+  size?: number;
+}
+
+// New function to support multiple files for offline submission
+export const saveOfflineSubmissionMultiple = async (
+  userEmail: string,
+  assessmentId: number,
+  files: OfflineSubmissionFile[],
+  submittedAt?: string
+) => {
+  try {
+    await initDb();
+    const db = await getDb();
+    
+    let finalSubmittedAt = submittedAt;
+    if (!finalSubmittedAt) {
+      const serverTime = await getSavedServerTime(userEmail);
+      finalSubmittedAt = serverTime || new Date().toISOString();
+    }
+    
+    // Prepare files array for JSON storage
+    const filesData = files.map(file => ({
+      uri: file.uri,
+      name: file.name,
+      type: file.type || 'application/octet-stream',
+      size: file.size || 0,
+    }));
+    
+    // For backward compatibility, store first file in legacy columns
+    const primaryUri = filesData[0]?.uri || '';
+    const primaryFilename = filesData[0]?.name || '';
+    const filesJson = encryptData(JSON.stringify(filesData));
+    const encryptedUri = encryptData(primaryUri);
+
+    await db.runAsync(
+      `INSERT OR REPLACE INTO offline_submissions (user_email, assessment_id, file_uri, original_filename, files_json, submission_status, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?);`,
+      [userEmail, assessmentId, encryptedUri, primaryFilename, filesJson, 'to sync', finalSubmittedAt]
+    );
+
+    console.log(`[Offline] Saved submission with ${filesData.length} file(s) for assessment ${assessmentId}`);
+    return finalSubmittedAt;
+  } catch (error) {
+    console.error('[Offline] Failed to save multi-file submission:', error);
     throw error;
   }
 };
@@ -2390,16 +2448,31 @@ export const getUnsyncedSubmissions = async (userEmail: string) => {
       [userEmail]
     );
 
-    // CHANGE: Decrypt the file_uri for every row
-    const decryptedResults = results.map((row: any) => ({
-      ...row,
-      file_uri: decryptData(row.file_uri)
-    }));
+    // Decrypt the file_uri and files_json for every row
+    const decryptedResults = results.map((row: any) => {
+      const result: any = {
+        ...row,
+        file_uri: decryptData(row.file_uri)
+      };
+      
+      // Decrypt and parse files_json if present (multiple files)
+      if (row.files_json) {
+        try {
+          const decryptedJson = decryptData(row.files_json);
+          result.files = JSON.parse(decryptedJson);
+        } catch (e) {
+          console.error('[Offline] Failed to parse files_json:', e);
+          result.files = null;
+        }
+      }
+      
+      return result;
+    });
 
-    console.log(`🔍 Found ${decryptedResults.length} unsynced submissions`);
+    console.log(`Found ${decryptedResults.length} unsynced submissions`);
     return decryptedResults;
   } catch (error) {
-    console.error('❌ Failed to get unsynced submissions:', error);
+    console.error('Failed to get unsynced submissions:', error);
     return [];
   }
 };

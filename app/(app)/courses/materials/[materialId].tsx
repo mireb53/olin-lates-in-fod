@@ -6,19 +6,19 @@ import { Stack, useLocalSearchParams } from 'expo-router';
 import * as Sharing from 'expo-sharing';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
-  Alert,
-  Dimensions,
-  Image,
-  Linking,
-  Modal,
-  Platform,
-  RefreshControl,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
+    ActivityIndicator,
+    Alert,
+    Dimensions,
+    Image,
+    Linking,
+    Modal,
+    Platform,
+    RefreshControl,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
@@ -26,6 +26,8 @@ import { WebView } from 'react-native-webview';
 import { getCompletedOfflineQuizzes, getMaterialDetailsFromDb, getUnsyncedSubmissions } from '@/lib/localDb';
 import { syncAllOfflineData } from '@/lib/offlineSync';
 import * as IntentLauncher from 'expo-intent-launcher';
+import DownloadProgressOverlay from '../../../../components/ui/DownloadProgressOverlay';
+import FileActionSheet from '../../../../components/ui/FileActionSheet';
 import { useNetworkStatus } from '../../../../context/NetworkContext';
 import api, { getAuthorizationHeader, getUserData, initializeAuth } from '../../../../lib/api';
 
@@ -207,6 +209,13 @@ export default function MaterialDetailsScreen() {
   const [generatingLink, setGeneratingLink] = useState(false); 
   const [imageLoaded, setImageLoaded] = useState(false);
   const [videoLoaded, setVideoLoaded] = useState(false);
+
+  // New UI states
+  const [showActionSheet, setShowActionSheet] = useState(false);
+  const [showDownloadOverlay, setShowDownloadOverlay] = useState(false);
+  const [downloadStatus, setDownloadStatus] = useState<'downloading' | 'processing' | 'complete' | 'error'>('downloading');
+  const [downloadedBytes, setDownloadedBytes] = useState(0);
+  const [totalBytes, setTotalBytes] = useState(0);
 
   useEffect(() => {
     initializeAuth();
@@ -589,25 +598,8 @@ export default function MaterialDetailsScreen() {
       return;
     }
 
-    Alert.alert(
-      'Download File',
-      'Choose where you want to save this file:',
-      [
-        {
-          text: 'Download in the app',
-          onPress: downloadToAppStorage, // Calls the renamed function
-        },
-        {
-          text: 'Download in device',
-          onPress: downloadToDeviceExternal, // Calls the new external function
-        },
-        {
-          text: 'Cancel',
-          style: 'cancel',
-        },
-      ],
-      { cancelable: true }
-    );
+    // Show the beautiful action sheet instead of Alert
+    setShowActionSheet(true);
   };
 
   const downloadToAppStorage = async () => {
@@ -620,11 +612,16 @@ export default function MaterialDetailsScreen() {
 
     setIsDownloading(true);
     setDownloadProgress(0);
+    setDownloadedBytes(0);
+    setTotalBytes(0);
+    setDownloadStatus('downloading');
+    setShowDownloadOverlay(true);
 
     try {
       const { status } = await MediaLibrary.requestPermissionsAsync();
       if (status !== 'granted') {
         setIsDownloading(false);
+        setShowDownloadOverlay(false);
         return;
       }
 
@@ -643,6 +640,8 @@ export default function MaterialDetailsScreen() {
           if (totalBytesExpectedToWrite > 0) {
             const progress = totalBytesWritten / totalBytesExpectedToWrite;
             setDownloadProgress(Math.round(progress * 100));
+            setDownloadedBytes(totalBytesWritten);
+            setTotalBytes(totalBytesExpectedToWrite);
           }
         }
       );
@@ -650,12 +649,18 @@ export default function MaterialDetailsScreen() {
       const result = await downloadResumable.downloadAsync();
 
       if (result?.uri) {
+        setDownloadStatus('processing');
         const fileInfo = await FileSystem.getInfoAsync(result.uri);
         if (fileInfo.exists && fileInfo.size > 0) {
           setDownloadedFileUri(result.uri);
           setFileSize(formatBytes(fileInfo.size));
           setDownloadDate(new Date(fileInfo.modificationTime * 1000).toLocaleDateString());
-          Alert.alert('Download Complete!', 'File is now available for offline viewing.');
+          setDownloadStatus('complete');
+          
+          // Auto close after success
+          setTimeout(() => {
+            setShowDownloadOverlay(false);
+          }, 1500);
         } else {
           throw new Error('Downloaded file is corrupted or empty.');
         }
@@ -663,7 +668,11 @@ export default function MaterialDetailsScreen() {
         throw new Error('Download failed.');
       }
     } catch (err) {
-      Alert.alert('Download Failed', 'Could not download the file. Please try again.');
+      setDownloadStatus('error');
+      setTimeout(() => {
+        setShowDownloadOverlay(false);
+        Alert.alert('Download Failed', 'Could not download the file. Please try again.');
+      }, 2000);
     } finally {
       setIsDownloading(false);
       setDownloadProgress(0);
@@ -1705,6 +1714,64 @@ export default function MaterialDetailsScreen() {
         </View>
       </ScrollView>
       {renderFullScreenModal()}
+      
+      {/* File Action Sheet */}
+      <FileActionSheet
+        visible={showActionSheet}
+        onClose={() => setShowActionSheet(false)}
+        fileName={materialDetail?.title}
+        fileSize={fileSize || materialDetail?.formatted_file_size}
+        fileType={getFileType(materialDetail?.file_path || '') as any}
+        isCached={!!downloadedFileUri}
+        actions={[
+          {
+            icon: 'phone-portrait-outline',
+            label: 'Save to App',
+            subtitle: 'Access offline within the app',
+            onPress: downloadToAppStorage,
+            color: '#1967d2',
+            disabled: !!downloadedFileUri,
+          },
+          {
+            icon: 'folder-outline',
+            label: 'Save to Device',
+            subtitle: 'Choose a folder on your device',
+            onPress: downloadToDeviceExternal,
+            color: '#16a34a',
+          },
+          ...(downloadedFileUri ? [{
+            icon: 'share-outline' as const,
+            label: 'Share File',
+            subtitle: 'Share with other apps',
+            onPress: handleOpenFile,
+            color: '#9333ea',
+          }] : []),
+          ...(downloadedFileUri ? [{
+            icon: 'trash-outline' as const,
+            label: 'Remove Download',
+            subtitle: 'Delete from app storage',
+            onPress: () => {
+              setShowActionSheet(false);
+              handleDeleteDownload();
+            },
+            color: '#ef4444',
+          }] : []),
+        ]}
+      />
+
+      {/* Download Progress Overlay */}
+      <DownloadProgressOverlay
+        visible={showDownloadOverlay}
+        progress={downloadProgress / 100}
+        fileName={materialDetail?.title || 'File'}
+        fileSize={totalBytes > 0 ? formatBytes(totalBytes) : fileSize || undefined}
+        downloadedSize={downloadedBytes > 0 ? formatBytes(downloadedBytes) : undefined}
+        status={downloadStatus}
+        onCancel={() => {
+          setShowDownloadOverlay(false);
+          setIsDownloading(false);
+        }}
+      />
     </View>
   );
 }

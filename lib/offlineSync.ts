@@ -44,9 +44,16 @@ export const syncAllOfflineData = async (source: string = 'App'): Promise<{
     for (const sub of unsyncedSubmissions) {
       try {
         console.log(`📤 ${source}: Syncing submission for assessment ${(sub as any).assessment_id}...`);
+        
+        // Use files array if available (multiple files), otherwise fallback to single file
+        const filesToSync = (sub as any).files || [{
+          uri: (sub as any).file_uri,
+          name: (sub as any).original_filename,
+        }];
+        
         await syncOfflineSubmission(
           (sub as any).assessment_id, 
-          (sub as any).file_uri, 
+          filesToSync, 
           (sub as any).original_filename, 
           (sub as any).submitted_at
         );

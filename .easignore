@@ -1,0 +1,26 @@
+# Exclude files not needed for EAS build upload
+# EAS will install dependencies on the builder
+node_modules/
+
+# VCS and editor configs
+.git/
+.gitignore
+.vscode/
+.idea/
+
+# Expo local caches
+.expo/
+.expo-shared/
+
+# OS & misc
+.DS_Store
+Thumbs.db
+*.log
+
+# Tests, coverage and build artifacts
+coverage/
+artifacts/
+
+# Native folders (managed workflow)
+android/
+ios/

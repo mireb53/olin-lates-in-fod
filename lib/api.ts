@@ -116,28 +116,32 @@ const performOfflineSync = async () => {
     // Sync file submissions
     for (const submission of unsyncedSubmissions) {
       try {
-        console.log(`📤 Syncing submission for assessment ${submission.assessment_id}...`);
+        console.log(`[Sync] Syncing submission for assessment ${submission.assessment_id}...`);
         
-        // --- MODIFICATION: Store result and delete on success ---
+        // Use files array if available (multiple files), otherwise fallback to single file
+        const filesToSync = submission.files || [{
+          uri: submission.file_uri,
+          name: submission.original_filename,
+        }];
+        
         const syncSuccess = await syncOfflineSubmission(
           submission.assessment_id,
-          submission.file_uri,
+          filesToSync,
           submission.original_filename,
           submission.submitted_at
         );
         
         if (syncSuccess) {
           await deleteOfflineSubmission(submission.id);
-          console.log(`✅ Deleted local submission ${submission.id}`);
+          console.log(`[Sync] Deleted local submission ${submission.id}`);
           successCount++;
         } else {
-          console.error(`❌ Sync returned false for submission ${submission.id}`);
+          console.error(`[Sync] Sync returned false for submission ${submission.id}`);
           failCount++;
         }
-        // --- END MODIFICATION ---
 
       } catch (error) {
-        console.error(`❌ Failed to sync submission ${submission.id}:`, error);
+        console.error(`[Sync] Failed to sync submission ${submission.id}:`, error);
         failCount++;
       }
     }
@@ -636,17 +640,26 @@ export const googleAuth = async (googleUser: {
 
 const activeUploads = new Set<number>();
 
+// Interface for offline submission files
+interface OfflineSyncFile {
+  uri: string;
+  name: string;
+  type?: string;
+  size?: number;
+}
+
+// Updated to support both single file and multiple files
 export const syncOfflineSubmission = async (
   assessmentId: number, 
-  fileUri: string, 
+  fileUriOrFiles: string | OfflineSyncFile[], 
   originalFilename: string, 
   submittedAt: string,
   onProgress?: (percentage: number) => void 
 ): Promise<SyncResult> => {
   // 1. Check Lock
   if (activeUploads.has(assessmentId)) {
-    console.log(`⚠️ Assessment ${assessmentId} is already uploading. Returning 'locked'.`);
-    return { status: 'locked' }; // <--- RETURN LOCKED STATUS
+    console.log(`[Sync] Assessment ${assessmentId} is already uploading. Returning 'locked'.`);
+    return { status: 'locked' };
   }
 
   // 2. Set Lock
@@ -655,21 +668,73 @@ export const syncOfflineSubmission = async (
   try {
     const formData = new FormData();
     
-    const isLink = fileUri.startsWith('http://') || fileUri.startsWith('https://');
-
-    if (isLink) {
-      formData.append('submission_link', fileUri);
+    // Determine if this is multiple files (array) or single file (string)
+    if (Array.isArray(fileUriOrFiles)) {
+      // Multiple files
+      const files = fileUriOrFiles;
+      console.log(`[Sync] Uploading ${files.length} file(s) for assessment ${assessmentId}...`);
+      
+      // Check if any file is a link
+      const hasLinks = files.some(f => f.uri.startsWith('http://') || f.uri.startsWith('https://'));
+      
+      if (hasLinks && files.length === 1) {
+        // Single link
+        formData.append('submission_link', files[0].uri);
+      } else {
+        // Multiple files or mixed content
+        files.forEach((file, index) => {
+          const isLink = file.uri.startsWith('http://') || file.uri.startsWith('https://');
+          if (isLink) {
+            formData.append('submission_link', file.uri);
+          } else {
+            // Determine mime type
+            let mimeType = file.type || 'application/octet-stream';
+            if (!file.type) {
+              const ext = file.name.split('.').pop()?.toLowerCase() || '';
+              const mimeMap: Record<string, string> = {
+                'pdf': 'application/pdf',
+                'doc': 'application/msword',
+                'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                'jpg': 'image/jpeg',
+                'jpeg': 'image/jpeg',
+                'png': 'image/png',
+                'gif': 'image/gif',
+                'txt': 'text/plain',
+                'zip': 'application/zip',
+                'rar': 'application/x-rar-compressed',
+                'mp4': 'video/mp4',
+                'mp3': 'audio/mpeg',
+              };
+              mimeType = mimeMap[ext] || 'application/octet-stream';
+            }
+            
+            formData.append('assignment_files[]', {
+              uri: file.uri,
+              name: file.name,
+              type: mimeType,
+            } as any);
+          }
+        });
+      }
     } else {
-      formData.append('assignment_file', {
-        uri: fileUri,
-        name: originalFilename,
-        type: 'application/octet-stream', 
-      } as any);
+      // Single file (legacy support)
+      const fileUri = fileUriOrFiles;
+      const isLink = fileUri.startsWith('http://') || fileUri.startsWith('https://');
+
+      if (isLink) {
+        formData.append('submission_link', fileUri);
+      } else {
+        formData.append('assignment_file', {
+          uri: fileUri,
+          name: originalFilename,
+          type: 'application/octet-stream', 
+        } as any);
+      }
     }
     
     formData.append('submitted_at', submittedAt);
 
-    console.log(`🔄 Attempting to sync offline submission for assessment ${assessmentId}...`);
+    console.log(`[Sync] Attempting to sync offline submission for assessment ${assessmentId}...`);
 
     const response = await api.post(`/assessments/${assessmentId}/submit-assignment`, formData, {
       headers: {
@@ -679,7 +744,6 @@ export const syncOfflineSubmission = async (
       onUploadProgress: (progressEvent) => {
         if (onProgress && progressEvent.total) {
           let percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-          // FIX: Clamp to 100% here too
           if (percentCompleted > 100) percentCompleted = 100;
           onProgress(percentCompleted);
         }
@@ -688,16 +752,15 @@ export const syncOfflineSubmission = async (
 
     // STRICT VALIDATION
     if (response.status === 200 && response.data.submission_id) {
-      console.log(`✅ Sync successful. ID: ${response.data.submission_id}`);
+      console.log(`[Sync] Sync successful. ID: ${response.data.submission_id}`);
       return { status: 'success', submissionId: response.data.submission_id };
     } else {
-      console.error(`❌ Sync failed: Missing submission_id.`);
-      // RETURN SPECIFIC MESSAGE
+      console.error(`[Sync] Sync failed: Missing submission_id.`);
       return { status: 'error', message: 'Server response missing ID.' };
     }
 
   } catch (err: any) {
-    console.error(`❌ Network Error syncing assessment ${assessmentId}:`, err.message);
+    console.error(`[Sync] Network Error syncing assessment ${assessmentId}:`, err.message);
     const msg = err.response?.data?.message || err.message || 'Network Error';
     return { status: 'error', message: msg };
   } finally {
@@ -836,16 +899,22 @@ export const manualSync = async (): Promise<{ success: number; failed: number }>
     const unsyncedSubmissions = await getUnsyncedSubmissions(userData.email) as UnsyncedSubmission[];
     const unsyncedQuizzes = await getCompletedOfflineQuizzes(userData.email) as UnsyncedQuiz[];
     
-    console.log(`📤 Found ${unsyncedSubmissions.length} unsynced submissions and ${unsyncedQuizzes.length} unsynced quizzes`);
+    console.log(`[ManualSync] Found ${unsyncedSubmissions.length} unsynced submissions and ${unsyncedQuizzes.length} unsynced quizzes`);
     
     let successCount = 0;
     let failCount = 0;
     
     // ... (Submission sync loop remains the same) ...
     for (const submission of unsyncedSubmissions) {
+      // Use files array if available (multiple files), otherwise fallback to single file
+      const filesToSync = submission.files || [{
+        uri: submission.file_uri,
+        name: submission.original_filename,
+      }];
+      
       const result = await syncOfflineSubmission(
         submission.assessment_id,
-        submission.file_uri,
+        filesToSync,
         submission.original_filename,
         submission.submitted_at
       );

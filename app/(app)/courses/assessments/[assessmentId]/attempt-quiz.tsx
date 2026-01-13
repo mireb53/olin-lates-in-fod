@@ -1,7 +1,8 @@
 // attempt-quiz.tsx
 import { Ionicons } from '@expo/vector-icons';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
-import * as ScreenCapture from 'expo-screen-capture';
+// Anti-screenshot temporarily disabled. To re-enable, uncomment this import and the effect below.
+// import * as ScreenCapture from 'expo-screen-capture';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -31,6 +32,13 @@ interface OriginalQuestion {
     question_type: string;
     correct_answer: string | null;
     points: number;
+    part_id?: number;
+    part?: {
+      id: number;
+      title: string;
+      instructions?: string;
+      order?: number;
+    };
 }
 // ... (rest of interfaces remain the same)
 interface SubmittedOption {
@@ -47,13 +55,25 @@ interface SubmittedQuestion {
   submitted_assessment_id: number;
   question_id: number;
   question_text: string;
-  question_type: 'multiple_choice' | 'true_false' | 'essay' | 'identification';
+  question_type: 'multiple_choice' | 'true_false' | 'essay' | 'identification' | 'enumeration';
   max_points: number;
   submitted_answer: string | null;
+  submitted_answers?: string[]; // For enumeration questions
   is_correct: boolean | null;
   score_earned: number | null;
+  // Handle both snake_case and camelCase from Laravel API
   submitted_options?: SubmittedOption[];
+  submittedOptions?: SubmittedOption[];
   original_question?: OriginalQuestion;
+  question?: OriginalQuestion; // Nested question from API (includes part relationship)
+  // Part information for grouped display (flattened for offline use)
+  part_id?: number;
+  part_title?: string;
+  part_order?: number;
+  part_instructions?: string;
+  // For enumeration questions
+  enumeration_answers?: string[];
+  is_order_sensitive?: boolean;
 }
 
 interface AssessmentDetail {
@@ -84,7 +104,7 @@ interface SubmittedAssessmentData {
 type StudentAnswers = {
   [submittedQuestionId: number]: {
     type: SubmittedQuestion['question_type'];
-    answer: string | number[];
+    answer: string | number[] | string[]; // Added string[] for enumeration
     isDirty?: boolean;
     submitted_answer?: string | null;
     is_correct?: boolean | null;
@@ -106,6 +126,7 @@ export default function AttemptQuizScreen() {
   const [submitting, setSubmitting] = useState(false);
   const debounceTimers = useRef<{ [key: number]: ReturnType<typeof setTimeout> | null }>({});
   const studentAnswersRef = useRef<StudentAnswers>(studentAnswers);
+  const scrollViewRef = useRef<ScrollView>(null);
   const [isSyncing, setIsSyncing] = useState(false);
   const [timeManipulationDetected, setTimeManipulationDetected] = useState(false);
   const [autoSubmitting, setAutoSubmitting] = useState(false); 
@@ -123,6 +144,13 @@ export default function AttemptQuizScreen() {
   const assessmentType = submittedAssessment?.assessment?.type || 'assessment';
   const assessmentTypeCapitalized = assessmentType.charAt(0).toUpperCase() + assessmentType.slice(1);
 
+  // --- Navigate to page and scroll to top (Bug Fix from mobile-app_latest) ---
+  const goToPage = (page: number) => {
+    setCurrentPage(page);
+    // Scroll to top when navigating between pages
+    scrollViewRef.current?.scrollTo({ y: 0, animated: true });
+  };
+
   // --- UTILITY FUNCTION: Fisher-Yates shuffle algorithm (Keep here just in case, though unused for resume) ---
   const shuffleArray = (array: SubmittedQuestion[]): SubmittedQuestion[] => {
       const newArray = [...array];
@@ -135,28 +163,29 @@ export default function AttemptQuizScreen() {
   // --- END UTILITY FUNCTION ---
 
   // --- START: All existing hooks (mostly untouched) ---
-  useEffect(() => {
-    const activateScreenshotPrevention = async () => {
-      await ScreenCapture.preventScreenCaptureAsync();
-    };
-    const deactivateScreenshotPrevention = async () => {
-      await ScreenCapture.allowScreenCaptureAsync();
-    };
-
-    activateScreenshotPrevention();
-    const subscription = ScreenCapture.addScreenshotListener(() => {
-      Alert.alert(
-        'Screenshot Not Allowed',
-        `For security reasons, taking screenshots is not allowed during this ${assessmentType}. This attempt has been noted.`,
-        [{ text: 'OK' }]
-      );
-    });
-
-    return () => {
-      deactivateScreenshotPrevention();
-      subscription.remove();
-    };
-  }, [assessmentType]);
+  // TODO: Re-enable anti-screenshot when needed
+  // useEffect(() => {
+  //   const activateScreenshotPrevention = async () => {
+  //     await ScreenCapture.preventScreenCaptureAsync();
+  //   };
+  //   const deactivateScreenshotPrevention = async () => {
+  //     await ScreenCapture.allowScreenCaptureAsync();
+  //   };
+  //
+  //   activateScreenshotPrevention();
+  //   const subscription = ScreenCapture.addScreenshotListener(() => {
+  //     Alert.alert(
+  //       'Screenshot Not Allowed',
+  //       `For security reasons, taking screenshots is not allowed during this ${assessmentType}. This attempt has been noted.`,
+  //       [{ text: 'OK' }]
+  //     );
+  //   });
+  //
+  //   return () => {
+  //     deactivateScreenshotPrevention();
+  //     subscription.remove();
+  //   };
+  // }, [assessmentType]);
 
   useEffect(() => {
     if (!submittedAssessment || !submittedAssessment.assessment.duration_minutes || 
@@ -186,6 +215,20 @@ export default function AttemptQuizScreen() {
       // The order of submitted_questions is already correct (default or persisted)
       setShuffledQuestions(submittedAssessment.submitted_questions);
       console.log('✅ Initial questions loaded into display list.');
+      
+      // Initialize enumeration answers
+      const initialAnswers: StudentAnswers = {};
+      submittedAssessment.submitted_questions.forEach((q) => {
+        if (q.question_type === 'enumeration') {
+          const answerCount = q.enumeration_answers?.length || 2;
+          initialAnswers[q.id] = {
+            type: 'enumeration',
+            answer: q.submitted_answers || Array(answerCount).fill(''),
+            isDirty: false,
+          };
+        }
+      });
+      setStudentAnswers(prev => ({ ...prev, ...initialAnswers }));
     } else if (submittedAssessment && submittedAssessment.submitted_questions.length > 0 && shuffledQuestions.length > 0) {
         console.log('✅ Questions already loaded, preserving order.');
     }
@@ -212,6 +255,8 @@ export default function AttemptQuizScreen() {
       hasAssessment: !!submittedAssessment,
       hasDuration: !!submittedAssessment?.assessment?.duration_minutes,
       status: submittedAssessment?.status,
+      started_at: submittedAssessment?.started_at,
+      duration_minutes: submittedAssessment?.assessment?.duration_minutes,
     });
     
     if (!submittedAssessment || !submittedAssessment.assessment.duration_minutes || submittedAssessment.status !== 'in_progress' || timeManipulationDetected) {
@@ -221,13 +266,30 @@ export default function AttemptQuizScreen() {
       return;
     }
 
-    const startTime = new Date(submittedAssessment.started_at).getTime();
+    // Parse the started_at time - handle both ISO format and Laravel's default format (Bug Fix)
+    let startTimeStr = submittedAssessment.started_at;
+    // If the timestamp doesn't end with Z and doesn't have timezone info, assume it's UTC
+    if (startTimeStr && !startTimeStr.endsWith('Z') && !startTimeStr.includes('+')) {
+      startTimeStr = startTimeStr.replace(' ', 'T') + 'Z';
+    }
+    
+    const startTime = new Date(startTimeStr).getTime();
     const durationMs = submittedAssessment.assessment.duration_minutes * 60 * 1000;
     const endTime = startTime + durationMs;
+    const now = Date.now();
 
-    const initialTimeLeft = Math.floor((endTime - Date.now()) / 1000);
+    console.log(`⏰ Timer Debug:`, {
+      startTimeStr,
+      startTime,
+      durationMs,
+      endTime,
+      now,
+      diff: endTime - now,
+    });
+
+    const initialTimeLeft = Math.floor((endTime - now) / 1000);
     setTimeLeft(initialTimeLeft > 0 ? initialTimeLeft : 0);
-    console.log(`⏰ Timer synchronously set to initial value: ${initialTimeLeft} seconds`);
+    console.log(`⏰ Timer synchronously set to initial value: ${initialTimeLeft} seconds (${Math.floor(initialTimeLeft/60)} minutes)`);
 
     const calculateTimeLeft = async () => {
       try {
@@ -577,6 +639,12 @@ export default function AttemptQuizScreen() {
               is_correct: null,
               score_earned: null,
               submitted_options: submittedOptions,
+              // Include part information for grouped display
+              // Support both flat (q.part_title) and nested (q.part.title) structures
+              part_id: q.part_id ?? q.part?.id,
+              part_title: q.part_title ?? q.part?.title,
+              part_order: q.part_order ?? q.part?.order,
+              part_instructions: q.part_instructions ?? q.part?.instructions,
             } as SubmittedQuestion; 
           });
 
@@ -672,7 +740,8 @@ export default function AttemptQuizScreen() {
     const initialAnswers: StudentAnswers = {};
     questions.forEach((q: SubmittedQuestion) => {
       if (q.question_type === 'multiple_choice' || q.question_type === 'true_false') {
-        const selectedOptions = q.submitted_options?.filter(opt => opt.is_selected).map(opt => opt.question_option_id) || [];
+        const options = q.submitted_options || q.submittedOptions || [];
+        const selectedOptions = options.filter(opt => opt.is_selected).map(opt => opt.question_option_id) || [];
         initialAnswers[q.id] = { type: q.question_type, answer: selectedOptions, isDirty: false };
       } else {
         initialAnswers[q.id] = { type: q.question_type, answer: q.submitted_answer || '', isDirty: false };
@@ -733,6 +802,8 @@ export default function AttemptQuizScreen() {
         let payload: any = {};
         if (answerData.type === 'multiple_choice' || answerData.type === 'true_false') {
           payload.selected_option_ids = answerData.answer as number[];
+        } else if (answerData.type === 'enumeration') {
+          payload.submitted_answers = answerData.answer as string[];
         } else {
           payload.submitted_answer = answerData.answer as string;
         }
@@ -757,7 +828,7 @@ export default function AttemptQuizScreen() {
   const handleAnswerChange = (
     submittedQuestionId: number, 
     type: SubmittedQuestion['question_type'], 
-    value: string | number | number[]
+    value: string | number | number[] | string[]
   ) => {
     if (timeManipulationDetected) {
       Alert.alert(
@@ -768,10 +839,41 @@ export default function AttemptQuizScreen() {
       return;
     }
 
+    // Normalize value to match StudentAnswers type
+    const normalizedValue: string | number[] | string[] = 
+      typeof value === 'number' ? [value] : value;
+
     setStudentAnswers((prevAnswers) => ({
       ...prevAnswers,
-      [submittedQuestionId]: { type, answer: value, isDirty: true },
+      [submittedQuestionId]: { type, answer: normalizedValue, isDirty: true },
     }));
+
+    if (debounceTimers.current[submittedQuestionId]) {
+      clearTimeout(debounceTimers.current[submittedQuestionId] as unknown as NodeJS.Timeout);
+    }
+
+    debounceTimers.current[submittedQuestionId] = setTimeout(() => {
+      saveAnswer(submittedQuestionId);
+    }, 1000);
+  };
+
+  // Handler for enumeration answer changes
+  const handleEnumerationAnswerChange = (
+    submittedQuestionId: number,
+    index: number,
+    value: string
+  ) => {
+    if (timeManipulationDetected || autoSubmitting) return;
+
+    setStudentAnswers((prevAnswers) => {
+      const currentAnswers = (prevAnswers[submittedQuestionId]?.answer as string[]) || [];
+      const updatedAnswers = [...currentAnswers];
+      updatedAnswers[index] = value;
+      return {
+        ...prevAnswers,
+        [submittedQuestionId]: { type: 'enumeration', answer: updatedAnswers, isDirty: true },
+      };
+    });
 
     if (debounceTimers.current[submittedQuestionId]) {
       clearTimeout(debounceTimers.current[submittedQuestionId] as unknown as NodeJS.Timeout);
@@ -911,22 +1013,38 @@ export default function AttemptQuizScreen() {
       let submittedAnswerText: string | null = null;
 
       if (question.question_type === 'multiple_choice' || question.question_type === 'true_false') {
-        const selectedOptionIds = new Set(Array.isArray(answerData.answer) ? answerData.answer : [answerData.answer]);
-        const correctOptionIds = new Set(question.submitted_options?.filter(o => o.is_correct_option).map(o => o.question_option_id));
+        // Convert answer to number array for comparison with option IDs
+        const answerArray = Array.isArray(answerData.answer) 
+          ? (answerData.answer as (string | number)[]).map(a => Number(a))
+          : [Number(answerData.answer)];
+        const selectedOptionIds = new Set<number>(answerArray);
+        const options = question.submitted_options || question.submittedOptions || [];
+        const correctOptionIds = new Set<number>(options.filter(o => o.is_correct_option).map(o => o.question_option_id) || []);
         
         isCorrect = selectedOptionIds.size === correctOptionIds.size && [...selectedOptionIds].every(id => correctOptionIds.has(id));
         scoreEarned = isCorrect ? question.max_points : 0;
 
-        const firstSelectedOption = question.submitted_options?.find(o => selectedOptionIds.has(o.question_option_id));
+        const firstSelectedOption = options.find(o => selectedOptionIds.has(o.question_option_id));
         submittedAnswerText = firstSelectedOption?.option_text || null;
 
       } else if (question.question_type === 'identification') {
-        const correctOption = question.submitted_options?.[0];
-        submittedAnswerText = answerData.answer as string;
-        if (correctOption) {
-          isCorrect = (submittedAnswerText || '').trim().toLowerCase() === (correctOption.option_text || '').trim().toLowerCase();
-          scoreEarned = isCorrect ? question.max_points : 0;
-        }
+        // Bug Fix: Support multiple acceptable answers for identification questions
+        submittedAnswerText = (answerData.answer as string) || '';
+        const submittedAnswerLower = submittedAnswerText.trim().toLowerCase();
+        
+        // Check against all accepted answers (case-insensitive)
+        const correctOptions = question.submitted_options || question.submittedOptions || [];
+        isCorrect = correctOptions.some((option) => 
+          submittedAnswerLower === ((option.option_text as string) || '').trim().toLowerCase()
+        );
+        scoreEarned = isCorrect ? question.max_points : 0;
+      } else if (question.question_type === 'enumeration') {
+        // Handle enumeration answers
+        const submittedAnswers = Array.isArray(answerData.answer) ? answerData.answer as string[] : [];
+        submittedAnswerText = submittedAnswers.join(', ');
+        // Enumeration grading is handled server-side
+        isCorrect = null;
+        scoreEarned = null;
       } else { // Essay
         submittedAnswerText = answerData.answer as string;
         isCorrect = null;
@@ -1075,8 +1193,10 @@ export default function AttemptQuizScreen() {
 
   const formatTime = (totalSeconds: number | null) => {
     if (totalSeconds === null || totalSeconds < 0) return 'N/A';
-    const minutes = Math.ceil(totalSeconds / 60);
-    return `${minutes.toString()} min`;
+    // Precise MM:SS format (Bug Fix from mobile-app_latest)
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
   };
 
   // NOTE: The handleStartQuizAttempt function has been removed from this file (attempt-quiz.tsx)
@@ -1125,6 +1245,7 @@ export default function AttemptQuizScreen() {
       )}
 
       <ScrollView 
+        ref={scrollViewRef}
         style={styles.container} 
         contentContainerStyle={styles.scrollViewContent}
         onScroll={handleScroll}
@@ -1200,18 +1321,64 @@ export default function AttemptQuizScreen() {
           </Text>
         )}
         
+        {/* Online/Offline Assessment Mode Indicator (from mobile-app_latest) */}
+        <View style={[
+          styles.assessmentModeContainer, 
+          netInfo?.isInternetReachable ? styles.onlineModeContainer : styles.offlineModeContainer
+        ]}>
+          <Ionicons 
+            name={netInfo?.isInternetReachable ? "cloud-done" : "cloud-offline"} 
+            size={16} 
+            color={netInfo?.isInternetReachable ? "#137333" : "#ea8600"} 
+          />
+          <Text style={[
+            styles.assessmentModeText,
+            netInfo?.isInternetReachable ? styles.onlineModeText : styles.offlineModeText
+          ]}>
+            {netInfo?.isInternetReachable ? "Online Assessment" : "Offline Assessment"}
+          </Text>
+        </View>
+        
         <Text style={styles.quizStatus}>Status: {submittedAssessment.status.replace('_', ' ')}</Text>
-        {!netInfo?.isInternetReachable && (
-          <Text style={styles.offlineStatus}>⚠️ You are currently in Offline Mode</Text>
-        )}
       </View>
 
-      {shuffledQuestions
-        .slice(currentPage * QUESTIONS_PER_PAGE, (currentPage + 1) * QUESTIONS_PER_PAGE)
-        .map((question, index) => {
+      {(() => {
+        const questionsOnPage = shuffledQuestions.slice(
+          currentPage * QUESTIONS_PER_PAGE, 
+          (currentPage + 1) * QUESTIONS_PER_PAGE
+        );
+        let currentPartId: number | undefined = undefined;
+        
+        return questionsOnPage.map((question, index) => {
           const qIndex = currentPage * QUESTIONS_PER_PAGE + index;
+          
+          // Extract part data from either flat structure (offline) or nested structure (online API)
+          const partId = question.part_id ?? question.question?.part_id ?? question.question?.part?.id;
+          const partTitle = question.part_title ?? question.question?.part?.title;
+          const partInstructions = question.part_instructions ?? question.question?.part?.instructions;
+          
+          const showPartHeader = partId !== undefined && partId !== currentPartId;
+          if (partId !== undefined) {
+            currentPartId = partId;
+          }
+          
           return (
-        <View key={question.id} style={[styles.questionCard, (timeManipulationDetected || autoSubmitting) && styles.disabledCard]}>
+            <React.Fragment key={question.id}>
+              {/* Part Header - shows when entering a new part (from mobile-app_latest) */}
+              {showPartHeader && partTitle && (
+                <View style={styles.partHeader}>
+                  <View style={styles.partHeaderLine} />
+                  <Text style={styles.partHeaderText}>{partTitle}</Text>
+                  <View style={styles.partHeaderLine} />
+                </View>
+              )}
+              {showPartHeader && partInstructions && (
+                <View style={styles.partInstructions}>
+                  <Text style={styles.partInstructionsText}>{partInstructions}</Text>
+                </View>
+              )}
+              
+        <View style={[styles.questionCard, (timeManipulationDetected || autoSubmitting) && styles.disabledCard]}>
           <View style={styles.questionHeader}>
             <Text style={styles.questionText}>
               Q{qIndex + 1}. {question.question_text}
@@ -1221,7 +1388,7 @@ export default function AttemptQuizScreen() {
 
           {(question.question_type === 'multiple_choice' || question.question_type === 'true_false') && (
             <View style={styles.optionsContainer}>
-              {(question.submitted_options || []).map((option) => {
+              {(question.submitted_options || question.submittedOptions || []).map((option) => {
                 
                 const isSelectedByUser = isReview === 'true' 
                     ? option.is_selected 
@@ -1307,6 +1474,107 @@ export default function AttemptQuizScreen() {
               )}
             </>
           )}
+
+          {/* ENUMERATION QUESTION TYPE - Modern LMS UI */}
+          {question.question_type === 'enumeration' && (
+            <View style={styles.enumerationContainer}>
+              <View style={styles.enumerationHeader}>
+                <Text style={styles.answerLabel}>
+                  Provide {question.enumeration_answers?.length || 2} answer(s):
+                </Text>
+                {question.is_order_sensitive && (
+                  <View style={styles.orderSensitiveBadge}>
+                    <Ionicons name="swap-vertical" size={12} color="#6366F1" />
+                    <Text style={styles.orderHint}>Order matters</Text>
+                  </View>
+                )}
+              </View>
+              
+              {Array.from({ length: question.enumeration_answers?.length || 2 }).map((_, idx) => {
+                const currentAnswers = isReview === 'true' 
+                  ? (question.submitted_answers || [])
+                  : (studentAnswers[question.id]?.answer as string[] || []);
+                const currentValue = currentAnswers[idx] || '';
+                const correctAnswer = question.enumeration_answers?.[idx];
+                
+                // Review mode: determine if this specific answer is correct
+                let isCorrect = false;
+                let isIncorrect = false;
+                if (isReview === 'true' && correctAnswer && currentValue) {
+                  if (question.is_order_sensitive) {
+                    isCorrect = currentValue.toLowerCase().trim() === correctAnswer.toLowerCase().trim();
+                    isIncorrect = !isCorrect;
+                  } else {
+                    // For non-order-sensitive, check if answer exists anywhere in correct answers
+                    isCorrect = question.enumeration_answers?.some(
+                      ans => ans.toLowerCase().trim() === currentValue.toLowerCase().trim()
+                    ) || false;
+                    isIncorrect = !isCorrect;
+                  }
+                }
+
+                return (
+                  <View key={idx} style={styles.enumerationAnswerRow}>
+                    <View style={[
+                      styles.answerNumberBadge,
+                      isReview === 'true' && isCorrect && styles.answerNumberBadgeCorrect,
+                      isReview === 'true' && isIncorrect && styles.answerNumberBadgeIncorrect,
+                    ]}>
+                      <Text style={[
+                        styles.answerNumber,
+                        isReview === 'true' && isCorrect && styles.answerNumberCorrect,
+                        isReview === 'true' && isIncorrect && styles.answerNumberIncorrect,
+                      ]}>
+                        {idx + 1}
+                      </Text>
+                    </View>
+                    <View style={styles.enumerationInputWrapper}>
+                      <TextInput
+                        style={[
+                          styles.enumerationInput,
+                          (submittedAssessment.status !== 'in_progress' || timeManipulationDetected || autoSubmitting || isReview === 'true') && styles.disabledInput,
+                          isReview === 'true' && isCorrect && styles.enumerationInputCorrect,
+                          isReview === 'true' && isIncorrect && styles.enumerationInputIncorrect,
+                        ]}
+                        placeholder={`Answer ${idx + 1}`}
+                        placeholderTextColor="#9CA3AF"
+                        value={currentValue}
+                        onChangeText={(text) => handleEnumerationAnswerChange(question.id, idx, text)}
+                        editable={submittedAssessment.status === 'in_progress' && !timeManipulationDetected && !autoSubmitting && isReview !== 'true'}
+                      />
+                      {isReview === 'true' && isCorrect && (
+                        <View style={styles.enumerationFeedbackIcon}>
+                          <Ionicons name="checkmark-circle" size={20} color="#10B981" />
+                        </View>
+                      )}
+                      {isReview === 'true' && isIncorrect && (
+                        <View style={styles.enumerationFeedbackIcon}>
+                          <Ionicons name="close-circle" size={20} color="#EF4444" />
+                        </View>
+                      )}
+                    </View>
+                  </View>
+                );
+              })}
+              
+              {/* Show correct answers in review mode */}
+              {isReview === 'true' && question.enumeration_answers && question.enumeration_answers.length > 0 && (
+                <View style={styles.enumerationCorrectAnswersContainer}>
+                  <Text style={styles.enumerationCorrectLabel}>
+                    <Ionicons name="checkmark-done-circle" size={14} color="#10B981" /> Correct Answers:
+                  </Text>
+                  <View style={styles.enumerationCorrectList}>
+                    {question.enumeration_answers.map((ans, idx) => (
+                      <View key={idx} style={styles.enumerationCorrectItem}>
+                        <Text style={styles.enumerationCorrectNumber}>{idx + 1}.</Text>
+                        <Text style={styles.enumerationCorrectText}>{ans}</Text>
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              )}
+            </View>
+          )}
           
           {/* MOVED: Saving indicator to the bottom */}
           <View style={styles.pointsContainer}>
@@ -1326,7 +1594,10 @@ export default function AttemptQuizScreen() {
             )}
           </View>
         </View>
-      ); })}
+            </React.Fragment>
+          );
+        });
+      })()}
 
       {/* compute pagination layout so buttons can be centered when only one is shown */}
       {(() => {
@@ -1335,13 +1606,13 @@ export default function AttemptQuizScreen() {
         return (
           <View style={[styles.navigationContainer, (currentPage === 0 || isLastPage) ? styles.navigationCenter : null]}>
             {currentPage > 0 && (
-              <TouchableOpacity onPress={() => setCurrentPage(p => p - 1)} style={styles.navButton}>
+              <TouchableOpacity onPress={() => goToPage(currentPage - 1)} style={styles.navButton}>
                 <Text style={styles.navButtonText}>Previous</Text>
               </TouchableOpacity>
             )}
 
             {currentPage < Math.ceil(shuffledQuestions.length / QUESTIONS_PER_PAGE) - 1 ? (
-              <TouchableOpacity onPress={() => setCurrentPage(p => p + 1)} style={styles.navButton}>
+              <TouchableOpacity onPress={() => goToPage(currentPage + 1)} style={styles.navButton}>
                 <Text style={styles.navButtonText}>Next</Text>
               </TouchableOpacity>
             ) : (
@@ -1813,5 +2084,206 @@ const styles = StyleSheet.create({
   },
   stickyTimerWarning: {
     color: '#d93025',
+  },
+  // ============================================
+  // ENUMERATION QUESTION STYLES - Modern LMS UI
+  // ============================================
+  enumerationContainer: {
+    marginTop: isTablet ? 16 : 12,
+  },
+  enumerationHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: isTablet ? 14 : 10,
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  answerLabel: {
+    fontSize: isTablet ? 16 : 14,
+    fontWeight: '600',
+    color: '#374151',
+  },
+  orderSensitiveBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#EEF2FF',
+    paddingHorizontal: isTablet ? 12 : 10,
+    paddingVertical: isTablet ? 6 : 4,
+    borderRadius: 20,
+    gap: 4,
+  },
+  orderHint: {
+    fontSize: isTablet ? 13 : 11,
+    fontWeight: '500',
+    color: '#6366F1',
+  },
+  enumerationAnswerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: isTablet ? 14 : 10,
+    gap: isTablet ? 14 : 10,
+  },
+  answerNumberBadge: {
+    width: isTablet ? 40 : 32,
+    height: isTablet ? 40 : 32,
+    borderRadius: isTablet ? 20 : 16,
+    backgroundColor: '#E0E7FF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#6366F1',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  answerNumberBadgeCorrect: {
+    backgroundColor: '#D1FAE5',
+  },
+  answerNumberBadgeIncorrect: {
+    backgroundColor: '#FEE2E2',
+  },
+  answerNumber: {
+    fontSize: isTablet ? 16 : 14,
+    fontWeight: 'bold',
+    color: '#6366F1',
+  },
+  answerNumberCorrect: {
+    color: '#10B981',
+  },
+  answerNumberIncorrect: {
+    color: '#EF4444',
+  },
+  enumerationInputWrapper: {
+    flex: 1,
+    position: 'relative',
+  },
+  enumerationInput: {
+    flex: 1,
+    borderWidth: 1.5,
+    borderColor: '#D1D5DB',
+    borderRadius: isTablet ? 12 : 10,
+    paddingHorizontal: isTablet ? 16 : 12,
+    paddingVertical: isTablet ? 14 : 10,
+    paddingRight: 40, // Space for feedback icon
+    fontSize: isTablet ? 16 : 15,
+    backgroundColor: '#FFFFFF',
+    color: '#1F2937',
+  },
+  enumerationInputCorrect: {
+    borderColor: '#10B981',
+    borderWidth: 2,
+    backgroundColor: '#ECFDF5',
+  },
+  enumerationInputIncorrect: {
+    borderColor: '#EF4444',
+    borderWidth: 2,
+    backgroundColor: '#FEF2F2',
+  },
+  enumerationFeedbackIcon: {
+    position: 'absolute',
+    right: 12,
+    top: '50%',
+    transform: [{ translateY: -10 }],
+  },
+  enumerationCorrectAnswersContainer: {
+    marginTop: isTablet ? 16 : 12,
+    padding: isTablet ? 16 : 12,
+    backgroundColor: '#ECFDF5',
+    borderRadius: isTablet ? 12 : 10,
+    borderLeftWidth: 4,
+    borderLeftColor: '#10B981',
+  },
+  enumerationCorrectLabel: {
+    fontSize: isTablet ? 14 : 13,
+    fontWeight: '700',
+    color: '#047857',
+    marginBottom: isTablet ? 10 : 8,
+  },
+  enumerationCorrectList: {
+    gap: 6,
+  },
+  enumerationCorrectItem: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  enumerationCorrectNumber: {
+    fontSize: isTablet ? 14 : 13,
+    fontWeight: '600',
+    color: '#059669',
+    minWidth: 20,
+  },
+  enumerationCorrectText: {
+    flex: 1,
+    fontSize: isTablet ? 14 : 13,
+    color: '#065F46',
+    lineHeight: isTablet ? 22 : 20,
+  },
+  // Part Headers styles (from mobile-app_latest)
+  partHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: isTablet ? 28 : 24,
+    marginBottom: isTablet ? 16 : 12,
+    paddingHorizontal: isTablet ? 8 : 4,
+  },
+  partHeaderLine: {
+    flex: 1,
+    height: 2,
+    backgroundColor: '#e0e0e0',
+  },
+  partHeaderText: {
+    fontSize: isTablet ? 20 : 18,
+    fontWeight: '700',
+    color: '#1967d2',
+    paddingHorizontal: isTablet ? 20 : 16,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  partInstructions: {
+    backgroundColor: '#e8f0fe',
+    borderRadius: isTablet ? 12 : 8,
+    padding: isTablet ? 18 : 14,
+    marginBottom: isTablet ? 20 : 16,
+    borderLeftWidth: 4,
+    borderLeftColor: '#1967d2',
+  },
+  partInstructionsText: {
+    fontSize: isTablet ? 15 : 14,
+    color: '#3c4043',
+    lineHeight: isTablet ? 24 : 22,
+    fontStyle: 'italic',
+  },
+  // Online/Offline Assessment Mode styles (from mobile-app_latest)
+  assessmentModeContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: isTablet ? 10 : 8,
+    paddingHorizontal: isTablet ? 16 : 12,
+    borderRadius: isTablet ? 24 : 20,
+    alignSelf: 'flex-start',
+    marginTop: isTablet ? 14 : 10,
+    gap: 6,
+  },
+  onlineModeContainer: {
+    backgroundColor: '#e6f4ea',
+    borderWidth: 1,
+    borderColor: '#137333',
+  },
+  offlineModeContainer: {
+    backgroundColor: '#fef7e0',
+    borderWidth: 1,
+    borderColor: '#ea8600',
+  },
+  assessmentModeText: {
+    fontSize: isTablet ? 14 : 13,
+    fontWeight: '600',
+  },
+  onlineModeText: {
+    color: '#137333',
+  },
+  offlineModeText: {
+    color: '#ea8600',
   },
 });

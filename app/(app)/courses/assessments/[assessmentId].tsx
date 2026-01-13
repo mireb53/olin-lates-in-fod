@@ -8,19 +8,22 @@ import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import * as Sharing from 'expo-sharing';
 import React, { useCallback, useState } from 'react';
 import {
-  ActivityIndicator,
-  Alert,
-  Dimensions,
-  Linking,
-  Modal,
-  Platform,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View
+    ActivityIndicator,
+    Alert,
+    Dimensions,
+    Linking,
+    Modal,
+    Platform,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View
 } from 'react-native';
+
+// Import UI components
+import { SubmittedFileCard } from '../../../../components/ui';
 
 // Responsive design helper
 const { width: screenWidth } = Dimensions.get('window');
@@ -32,21 +35,21 @@ import { usePendingSyncNotification } from '@/hooks/usePendingSyncNotification';
 import { useNetworkStatus } from '../../../../context/NetworkContext';
 import api, { getUserData } from '../../../../lib/api';
 import {
-  checkIfAssessmentNeedsDetails,
-  deleteOfflineQuizAttempt,
-  getAssessmentDetailsFromDb,
-  getCompletedOfflineQuizzes,
-  getCurrentServerTime,
-  getOfflineAttemptCount,
-  getOfflineQuizAttempt,
-  getQuizQuestionsFromDb, // ADDED: Required for shuffling questions before start
-  getUnsyncedSubmissions,
-  hasAssessmentReviewSaved,
-  saveAssessmentDetailsToDb,
-  saveAssessmentReviewToDb,
-  saveAssessmentsToDb,
-  saveOfflineSubmission,
-  startOfflineQuiz
+    checkIfAssessmentNeedsDetails,
+    deleteOfflineQuizAttempt,
+    getAssessmentDetailsFromDb,
+    getCompletedOfflineQuizzes,
+    getCurrentServerTime,
+    getOfflineAttemptCount,
+    getOfflineQuizAttempt,
+    getQuizQuestionsFromDb, // ADDED: Required for shuffling questions before start
+    getUnsyncedSubmissions,
+    hasAssessmentReviewSaved,
+    saveAssessmentDetailsToDb,
+    saveAssessmentReviewToDb,
+    saveAssessmentsToDb,
+    saveOfflineSubmission,
+    startOfflineQuiz
 } from '../../../../lib/localDb';
 
 // Interface definitions (These should match your existing definitions)
@@ -77,6 +80,15 @@ interface AttemptStatus {
   in_progress_submitted_assessment_id: number | null;
 }
 
+// Interface for individual submitted file
+interface SubmittedFileItem {
+  path: string;
+  name: string;
+  size?: number;
+  type?: string;
+  url?: string;
+}
+
 interface LatestAssignmentSubmission {
   has_submitted_file: boolean;
   submitted_file_path: string | null;
@@ -85,7 +97,40 @@ interface LatestAssignmentSubmission {
   original_filename: string | null;
   submitted_at: string | null;
   status: string | null;
+  submitted_files?: SubmittedFileItem[]; // New: Array of submitted files
 }
+
+// Helper to parse multiple filenames (may be JSON array or single string)
+const parseFilenames = (filename: string | null): string[] => {
+  if (!filename) return [];
+  try {
+    // Try to parse as JSON array
+    const parsed = JSON.parse(filename);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((f): f is string => typeof f === 'string' && f.length > 0);
+    }
+    return [filename];
+  } catch {
+    // Not JSON, return as single file
+    return [filename];
+  }
+};
+
+// Helper to parse multiple file URLs (may be JSON array or single string)  
+const parseFileUrls = (url: string | null): string[] => {
+  if (!url) return [];
+  try {
+    // Try to parse as JSON array
+    const parsed = JSON.parse(url);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((u): u is string => typeof u === 'string' && u.length > 0);
+    }
+    return [url];
+  } catch {
+    // Not JSON, return as single URL
+    return [url];
+  }
+};
 
 interface SubmittedAssessment {
   id: number; 
@@ -98,30 +143,59 @@ interface SubmittedQuestion {
   submitted_assessment_id?: number;
   question_id?: number;
   question_text: string;
-  question_type: 'multiple_choice' | 'true_false' | 'essay' | 'identification';
+  question_type: 'multiple_choice' | 'true_false' | 'essay' | 'identification' | 'enumeration';
   max_points: number;
   submitted_answer: string | null;
+  submitted_answers?: string[]; // For enumeration questions
   is_correct: boolean | null;
   score_earned: number | null;
+  // Handle both snake_case and camelCase from Laravel API
   submitted_options?: any[];
+  submittedOptions?: any[];
   original_question?: any;
+  enumeration_answers?: string[];
+  is_order_sensitive?: boolean;
 }
 
 const getMimeType = (filePath: string): string => {
   const extension = filePath.split('.').pop()?.toLowerCase();
-  switch (extension) {
-    case 'pdf': return 'application/pdf';
-    case 'doc': return 'application/msword';
-    case 'docx': return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-    case 'xls': return 'application/vnd.ms-excel';
-    case 'xlsx': return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-    case 'ppt': return 'application/vnd.ms-powerpoint';
-    case 'pptx': return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
-    case 'txt': return 'text/plain';
-    case 'jpg': case 'jpeg': return 'image/jpeg';
-    case 'png': return 'image/png';
-    default: return 'application/octet-stream';
-  }
+  const mimeMap: { [key: string]: string } = {
+    'pdf': 'application/pdf',
+    'doc': 'application/msword',
+    'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'xls': 'application/vnd.ms-excel',
+    'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'ppt': 'application/vnd.ms-powerpoint',
+    'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'txt': 'text/plain',
+    'csv': 'text/csv',
+    'jpg': 'image/jpeg',
+    'jpeg': 'image/jpeg',
+    'png': 'image/png',
+    'gif': 'image/gif',
+    'webp': 'image/webp',
+    'svg': 'image/svg+xml',
+    'bmp': 'image/bmp',
+    'zip': 'application/zip',
+    'rar': 'application/x-rar-compressed',
+    '7z': 'application/x-7z-compressed',
+    'mp3': 'audio/mpeg',
+    'wav': 'audio/wav',
+    'mp4': 'video/mp4',
+    'mov': 'video/quicktime',
+    'avi': 'video/x-msvideo',
+    'html': 'text/html',
+    'css': 'text/css',
+    'js': 'application/javascript',
+    'json': 'application/json',
+    'xml': 'application/xml',
+    'php': 'application/x-php',
+    'py': 'text/x-python',
+    'java': 'text/x-java-source',
+    'c': 'text/x-c',
+    'cpp': 'text/x-c++',
+  };
+  return mimeMap[extension || ''] || 'application/octet-stream';
 };
 
 const getFileType = (filePath: string) => {
@@ -183,11 +257,16 @@ export default function AssessmentDetailsScreen() {
   const [hasOfflineAssignment, setHasOfflineAssignment] = useState<boolean>(false);
   const [isSubmissionModalVisible, setSubmissionModalVisible] = useState(false);
   const [submissionType, setSubmissionType] = useState<'file' | 'link' | null>(null);
-  const [selectedFile, setSelectedFile] = useState<DocumentPicker.DocumentPickerAsset | null>(null);
+  // Updated: Support multiple files
+  const [selectedFiles, setSelectedFiles] = useState<DocumentPicker.DocumentPickerAsset[]>([]);
   const [submissionLink, setSubmissionLink] = useState('');
   const [uploadProgress, setUploadProgress] = useState(0);
   const [hasLocalReview, setHasLocalReview] = useState(false);
   const [downloadingReview, setDownloadingReview] = useState(false);
+  // NEW: Delete/Remove submission modal
+  const [isRemoveModalVisible, setRemoveModalVisible] = useState(false);
+  const [isDeletingSubmission, setDeletingSubmission] = useState(false);
+  const [selectedFilesToDelete, setSelectedFilesToDelete] = useState<Set<number>>(new Set());
 
   const navigation = useNavigation();
 
@@ -197,6 +276,7 @@ export default function AssessmentDetailsScreen() {
   const [downloadDate, setDownloadDate] = useState<string | null>(null);
   const [fileSize, setFileSize] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+
 
   usePendingSyncNotification(netInfo?.isInternetReachable ?? null, 'assessment-details');
 
@@ -680,20 +760,44 @@ export default function AssessmentDetailsScreen() {
     return date.toLocaleDateString(undefined, options);
   };
 
-  const handlePickDocument = async () => {
+  // Updated: Support multiple file selection
+  const handlePickDocument = async (addMore = false) => {
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: '*/*',
         copyToCacheDirectory: true,
+        multiple: true, // Enable multiple file selection
       });
 
-      if (!result.canceled && result.assets[0]) {
-        const file = result.assets[0];
-        if (file.size && file.size > MAX_FILE_SIZE) {
-          Alert.alert('File Too Large', `The selected file exceeds the 50MB size limit.`);
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const newFiles = result.assets;
+        
+        // Calculate total size including existing files
+        const existingSize = selectedFiles.reduce((sum, f) => sum + (f.size || 0), 0);
+        const newFilesSize = newFiles.reduce((sum, f) => sum + (f.size || 0), 0);
+        const totalSize = existingSize + newFilesSize;
+        
+        if (totalSize > MAX_FILE_SIZE) {
+          Alert.alert(
+            'Total Size Exceeded', 
+            `The total size of all files exceeds 50MB.\n\nCurrent: ${formatBytes(existingSize)}\nNew files: ${formatBytes(newFilesSize)}\nLimit: 50MB`,
+            [{ text: 'OK' }]
+          );
           return;
         }
-        setSelectedFile(file);
+        
+        // Check individual file sizes
+        const oversizedFile = newFiles.find(f => f.size && f.size > MAX_FILE_SIZE);
+        if (oversizedFile) {
+          Alert.alert('File Too Large', `"${oversizedFile.name}" exceeds the 50MB limit.`);
+          return;
+        }
+        
+        if (addMore) {
+          setSelectedFiles(prev => [...prev, ...newFiles]);
+        } else {
+          setSelectedFiles(newFiles);
+        }
         setSubmissionLink('');
         setSubmissionType('file');
       }
@@ -701,6 +805,61 @@ export default function AssessmentDetailsScreen() {
       console.error('Document picking error:', err);
       Alert.alert('Error', 'Failed to pick document.');
     }
+  };
+
+  // NEW: Remove a specific file from the selection
+  const handleRemoveFile = (index: number) => {
+    setSelectedFiles(prev => {
+      const updated = prev.filter((_, i) => i !== index);
+      if (updated.length === 0) {
+        setSubmissionType(null);
+      }
+      return updated;
+    });
+  };
+
+  // NEW: Calculate total file size
+  const getTotalFileSize = () => {
+    return selectedFiles.reduce((sum, f) => sum + (f.size || 0), 0);
+  };
+
+  // NEW: Delete submission handler
+  const handleDeleteSubmission = async () => {
+    if (!assessmentDetail || !netInfo?.isInternetReachable) {
+      Alert.alert('Offline', 'You must be online to delete a submission.');
+      return;
+    }
+
+    Alert.alert(
+      'Delete Submission',
+      'Are you sure you want to delete your submission? This action cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            setDeletingSubmission(true);
+            try {
+              const response = await api.delete(`/assessments/${assessmentDetail.id}/delete-submission`);
+              if (response.status === 200) {
+                Alert.alert('Success', 'Your submission has been deleted.');
+                setLatestAssignmentSubmission(null);
+                setRemoveModalVisible(false);
+                await fetchAssessmentDetailsAndAttemptStatus();
+              } else {
+                Alert.alert('Error', response.data?.message || 'Failed to delete submission.');
+              }
+            } catch (err: any) {
+              console.error('Delete submission error:', err);
+              Alert.alert('Error', err.response?.data?.message || 'Failed to delete submission.');
+            } finally {
+              setDeletingSubmission(false);
+            }
+          },
+        },
+      ]
+    );
   };
 
   const handleDownloadSubmittedFile = async (fileUrl: string) => {
@@ -905,10 +1064,10 @@ export default function AssessmentDetailsScreen() {
       return;
     }
     
-    const hasFile = selectedFile !== null;
+    const hasFiles = selectedFiles.length > 0;
     const hasLink = submissionLink.trim() !== '';
     
-    if (!hasFile && !hasLink) {
+    if (!hasFiles && !hasLink) {
       Alert.alert(`No Submission`, `Please select a file or enter a link to submit.`);
       return;
     }
@@ -921,26 +1080,24 @@ export default function AssessmentDetailsScreen() {
         const formData = new FormData();
         if (hasLink) {
           formData.append('submission_link', submissionLink.trim());
-        } else if (hasFile && selectedFile) {
-          formData.append('assignment_file', {
-            uri: selectedFile.uri,
-            name: selectedFile.name,
-            type: selectedFile.mimeType || 'application/octet-stream',
-          } as any);
+        } else if (hasFiles) {
+          // Support multiple files - append each with array notation
+          selectedFiles.forEach((file, index) => {
+            formData.append('assignment_files[]', {
+              uri: file.uri,
+              name: file.name,
+              type: file.mimeType || 'application/octet-stream',
+            } as any);
+          });
         }
 
         const response = await api.post(`/assessments/${assessmentDetail.id}/submit-assignment`, formData, {
           headers: { 'Content-Type': 'multipart/form-data' },
-          timeout: 180000, // 3 minutes timeout
+          timeout: 300000, // 5 minutes timeout for multiple files
           onUploadProgress: (progressEvent) => {
             if (progressEvent.total) {
               let percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-              
-              // --- FIX START --- 
-              // Clamp the value to 100% to prevent it from showing 200% or higher
               if (percent > 100) percent = 100;
-              // --- FIX END ---
-
               setUploadProgress(percent);
             }
           },
@@ -948,7 +1105,7 @@ export default function AssessmentDetailsScreen() {
 
         if (response.status === 200) {
           Alert.alert('Success', response.data.message || 'Submission successful!');
-          setSelectedFile(null);
+          setSelectedFiles([]);
           setSubmissionLink('');
           setSubmissionType(null);
           await fetchAssessmentDetailsAndAttemptStatus();
@@ -956,37 +1113,66 @@ export default function AssessmentDetailsScreen() {
           Alert.alert('Error', response.data.message || 'Failed to submit.');
         }
       } else {
-        // Offline logic (Unchanged)
+        // Offline logic - now supports multiple files
         const user = await getUserData();
         if (user && user.email) {
-          let submissionUri = '';
-          let submissionName = '';
-          if (hasLink) {
-            submissionUri = submissionLink.trim();
-            submissionName = submissionLink.trim();
-          } else if (hasFile && selectedFile) {
-            submissionUri = selectedFile.uri;
-            submissionName = selectedFile.name;
-          }
           const serverSubmissionTime = await getCurrentServerTime(user.email);
-          const actualSubmissionTime = await saveOfflineSubmission(
-            user.email,
-            assessmentDetail.id,
-            submissionUri,
-            submissionName,
-            serverSubmissionTime
-          );
-          Alert.alert('Submission Saved Offline', 'Your work has been saved and will be submitted once you are online.');
-          setLatestAssignmentSubmission({
-            has_submitted_file: true,
-            submitted_file_path: submissionUri,
-            submitted_file_url: null,
-            submitted_file_name: submissionName,
-            original_filename: submissionName,
-            submitted_at: actualSubmissionTime,
-            status: 'to sync',
-          });
-          setSelectedFile(null);
+          
+          if (hasLink) {
+            // For links, use single file save
+            const actualSubmissionTime = await saveOfflineSubmission(
+              user.email,
+              assessmentDetail.id,
+              submissionLink.trim(),
+              submissionLink.trim(),
+              serverSubmissionTime
+            );
+            Alert.alert('Submission Saved Offline', 'Your link has been saved and will be submitted once you are online.');
+            setLatestAssignmentSubmission({
+              has_submitted_file: true,
+              submitted_file_path: submissionLink.trim(),
+              submitted_file_url: null,
+              submitted_file_name: submissionLink.trim(),
+              original_filename: submissionLink.trim(),
+              submitted_at: actualSubmissionTime,
+              status: 'to sync',
+            });
+          } else if (hasFiles) {
+            // For multiple files, use saveOfflineSubmissionMultiple
+            const { saveOfflineSubmissionMultiple } = await import('@/lib/localDb');
+            const filesToSave = selectedFiles.map(file => ({
+              uri: file.uri,
+              name: file.name,
+              type: file.mimeType || 'application/octet-stream',
+              size: file.size || 0,
+            }));
+            
+            const actualSubmissionTime = await saveOfflineSubmissionMultiple(
+              user.email,
+              assessmentDetail.id,
+              filesToSave,
+              serverSubmissionTime
+            );
+            
+            Alert.alert('Submission Saved Offline', `Your ${selectedFiles.length} file(s) have been saved and will be submitted once you are online.`);
+            setLatestAssignmentSubmission({
+              has_submitted_file: true,
+              submitted_file_path: selectedFiles[0]?.uri || '',
+              submitted_file_url: null,
+              submitted_file_name: selectedFiles[0]?.name || '',
+              original_filename: selectedFiles[0]?.name || '',
+              submitted_at: actualSubmissionTime,
+              status: 'to sync',
+              submitted_files: filesToSave.map(f => ({
+                path: f.uri,
+                name: f.name,
+                type: f.type,
+                size: f.size,
+              })),
+            });
+          }
+          
+          setSelectedFiles([]);
           setSubmissionLink('');
           setSubmissionType(null);
         } else {
@@ -1071,14 +1257,14 @@ export default function AssessmentDetailsScreen() {
   const assessmentType = assessmentDetail?.type || 'assessment';
   const assessmentTypeCapitalized = assessmentType.charAt(0).toUpperCase() + assessmentType.slice(1);
   
-  // --- NEW VARS for Assignment Button ---
+  // --- UPDATED VARS for Assignment Button (Delete/Remove flow) ---
   const hasSubmittedAssignment = (latestAssignmentSubmission?.has_submitted_file || hasOfflineAssignment);
   const assignmentButtonText = !isAssessmentCurrentlyOpen
     ? 'Assessment Unavailable'
     : hasSubmittedAssignment
-    ? 'Edit Submission'
+    ? 'Remove Submission'  // Changed from 'Edit Submission'
     : 'Submit Assessment';
-  const assignmentButtonIcon = hasSubmittedAssignment ? 'create-outline' : 'add-circle';
+  const assignmentButtonIcon = hasSubmittedAssignment ? 'trash-outline' : 'add-circle';  // Changed icon
 
   let quizButtonText = `Start ${assessmentTypeCapitalized}`;
   
@@ -1349,48 +1535,93 @@ export default function AssessmentDetailsScreen() {
           <View style={styles.sectionContainer}>
             <Text style={styles.sectionHeader}>Previous Submission</Text>
             <View style={styles.submissionCard}>
-              <View style={styles.submissionHeader}>
-                <View style={styles.submissionIconContainer}>
-                  <Ionicons name="document-text" size={20} color="#27ae60" />
-                </View>
-                <View style={styles.submissionInfo}>
-                  <Text style={styles.submissionFileName}>{latestAssignmentSubmission.original_filename || 'Unknown File'}</Text>
-                  {latestAssignmentSubmission.status && (
-                    <View
-                      style={[
-                        styles.statusBadge,
-                        latestAssignmentSubmission.status === 'to sync'
-                          ? { backgroundColor: '#f39c12' }
-                          : { backgroundColor: '#27ae60' },
-                      ]}
-                    >
-                      <Text style={styles.statusText}>{latestAssignmentSubmission.status.replace('_', ' ').toUpperCase()}</Text>
+              {/* Build files array from new submitted_files or legacy format */}
+              {(() => {
+                const files: { name: string; url?: string; type: string }[] = [];
+                
+                if (latestAssignmentSubmission.submitted_files && latestAssignmentSubmission.submitted_files.length > 0) {
+                  // New format - multiple files array
+                  latestAssignmentSubmission.submitted_files.forEach(f => {
+                    files.push({
+                      name: f.name,
+                      url: f.url,
+                      type: f.type === 'link' ? 'link' : getFileType(f.name),
+                    });
+                  });
+                } else {
+                  // Legacy format - parse from original_filename
+                  const filenames = parseFilenames(latestAssignmentSubmission.original_filename);
+                  const fileUrls = parseFileUrls(latestAssignmentSubmission.submitted_file_url);
+                  filenames.forEach((filename, index) => {
+                    files.push({
+                      name: filename,
+                      url: fileUrls[index] || undefined,
+                      type: getFileType(filename),
+                    });
+                  });
+                }
+                
+                return (
+                  <>
+                    <View style={styles.submissionHeader}>
+                      <View style={styles.submissionIconContainer}>
+                        <Ionicons name="document-text" size={20} color="#27ae60" />
+                      </View>
+                      <View style={styles.submissionInfo}>
+                        <Text style={styles.submissionFileName}>
+                          {files.length > 1 ? `${files.length} files submitted` : (files[0]?.name || 'Unknown File')}
+                        </Text>
+                        {latestAssignmentSubmission.status && (
+                          <View
+                            style={[
+                              styles.statusBadge,
+                              latestAssignmentSubmission.status === 'to sync'
+                                ? { backgroundColor: '#f39c12' }
+                                : { backgroundColor: '#27ae60' },
+                            ]}
+                          >
+                            <Text style={styles.statusText}>{latestAssignmentSubmission.status.replace('_', ' ').toUpperCase()}</Text>
+                          </View>
+                        )}
+                      </View>
                     </View>
-                  )}
-                </View>
-              </View>
-              {latestAssignmentSubmission.submitted_at && (
-                <Text style={styles.submissionDate}>
-                  Submitted: {
-                    latestAssignmentSubmission.status === 'to sync'
-                      ? formatDate(latestAssignmentSubmission.submitted_at)
-                      : formatUTCDate(latestAssignmentSubmission.submitted_at)
-                  }
-                </Text>
-              )}
-              {latestAssignmentSubmission.submitted_file_url && (
-                <TouchableOpacity
-                  onPress={() => handleDownloadSubmittedFile(latestAssignmentSubmission.submitted_file_url!)}
-                  style={[styles.downloadButton, !netInfo?.isInternetReachable && styles.downloadButtonDisabled]}
-                  disabled={!netInfo?.isInternetReachable}
-                >
-                  <Ionicons name="cloud-download" size={16} color={netInfo?.isInternetReachable ? '#2196F3' : '#ccc'} />
-                  <Text style={[styles.downloadButtonText, !netInfo?.isInternetReachable && { color: '#ccc' }]}>
-                    Download Submission
-                  </Text>
-                </TouchableOpacity>
-              )}
-              {!netInfo?.isInternetReachable && <Text style={styles.offlineWarning}></Text>}
+                    
+                    {/* File List for multiple files - Using SubmittedFileCard */}
+                    {files.length > 0 && (
+                      <View style={styles.submittedFilesContainer}>
+                        {files.map((file, index) => (
+                          <SubmittedFileCard
+                            key={index}
+                            fileName={file.name || 'Unknown File'}
+                            fileType={file.type === 'link' ? 'other' : file.type}
+                            isLink={file.type === 'link'}
+                            onDownload={file.url && file.type !== 'link' && netInfo?.isInternetReachable 
+                              ? () => handleDownloadSubmittedFile(file.url!)
+                              : undefined
+                            }
+                            onOpen={file.url && file.type === 'link' && netInfo?.isInternetReachable
+                              ? () => Linking.openURL(file.url!)
+                              : undefined
+                            }
+                            disabled={!netInfo?.isInternetReachable}
+                          />
+                        ))}
+                      </View>
+                    )}
+                    
+                    {latestAssignmentSubmission.submitted_at && (
+                      <Text style={[styles.submissionDate, { marginTop: 10 }]}>
+                        Submitted: {
+                          latestAssignmentSubmission.status === 'to sync'
+                            ? formatDate(latestAssignmentSubmission.submitted_at)
+                            : formatUTCDate(latestAssignmentSubmission.submitted_at)
+                        }
+                      </Text>
+                    )}
+                    {!netInfo?.isInternetReachable && <Text style={styles.offlineWarning}></Text>}
+                  </>
+                );
+              })()}
             </View>
           </View>
         )}
@@ -1398,19 +1629,53 @@ export default function AssessmentDetailsScreen() {
           {isAssignmentType ? (
             <View>
               <Text style={styles.sectionHeader}>Submit Your Work</Text>
-              {submissionType === 'file' && selectedFile ? (
-                <View style={styles.submissionPreviewCard}>
-                  <Ionicons name="document-attach" size={24} color="#1976d2" />
-                  <Text style={styles.submissionPreviewText} numberOfLines={1}>
-                    {selectedFile.name}
-                  </Text>
+              
+              {/* Multiple Files Preview - Modern Card UI */}
+              {submissionType === 'file' && selectedFiles.length > 0 ? (
+                <View style={styles.multiFileContainer}>
+                  {/* File Size Summary */}
+                  <View style={styles.fileSizeSummary}>
+                    <Ionicons name="folder-open" size={18} color="#6366F1" />
+                    <Text style={styles.fileSizeSummaryText}>
+                      {selectedFiles.length} file{selectedFiles.length > 1 ? 's' : ''} • {formatBytes(getTotalFileSize())} / 50MB
+                    </Text>
+                    <View style={[
+                      styles.fileSizeProgressBar,
+                      { width: `${Math.min((getTotalFileSize() / MAX_FILE_SIZE) * 100, 100)}%` },
+                      getTotalFileSize() > MAX_FILE_SIZE * 0.8 && styles.fileSizeProgressBarWarning,
+                    ]} />
+                  </View>
+                  
+                  {/* Individual File Cards */}
+                  {selectedFiles.map((file, index) => (
+                    <View key={index} style={styles.fileCard}>
+                      <View style={styles.fileCardIcon}>
+                        <Ionicons 
+                          name={getFileIcon(getFileType(file.name))} 
+                          size={24} 
+                          color="#1976d2" 
+                        />
+                      </View>
+                      <View style={styles.fileCardInfo}>
+                        <Text style={styles.fileCardName} numberOfLines={1}>{file.name}</Text>
+                        <Text style={styles.fileCardSize}>{formatBytes(file.size || 0)}</Text>
+                      </View>
+                      <TouchableOpacity
+                        style={styles.fileCardRemove}
+                        onPress={() => handleRemoveFile(index)}
+                      >
+                        <Ionicons name="close-circle" size={24} color="#EF4444" />
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                  
+                  {/* Add More Files Button */}
                   <TouchableOpacity
-                    onPress={() => {
-                      setSelectedFile(null);
-                      setSubmissionType(null);
-                    }}
+                    style={styles.addMoreFilesButton}
+                    onPress={() => handlePickDocument(true)}
                   >
-                    <Ionicons name="close-circle" size={24} color="#d93025" />
+                    <Ionicons name="add-circle-outline" size={20} color="#6366F1" />
+                    <Text style={styles.addMoreFilesText}>Add More Files</Text>
                   </TouchableOpacity>
                 </View>
               ) : submissionType === 'link' && submissionLink ? (
@@ -1429,20 +1694,33 @@ export default function AssessmentDetailsScreen() {
                   </TouchableOpacity>
                 </View>
               ) : (
+                /* Submit/Remove Button */
                 <TouchableOpacity
                   testID="submit-assignment-button"
-                  style={[styles.submitButton, (!isAssessmentCurrentlyOpen || submissionLoading) && styles.submitButtonDisabled]}
-                  onPress={() => setSubmissionModalVisible(true)}
+                  style={[
+                    styles.submitButton, 
+                    (!isAssessmentCurrentlyOpen || submissionLoading) && styles.submitButtonDisabled,
+                    hasSubmittedAssignment && styles.removeSubmissionButton, // Red style for remove
+                  ]}
+                  onPress={() => {
+                    if (hasSubmittedAssignment) {
+                      setRemoveModalVisible(true); // Open remove modal
+                    } else {
+                      setSubmissionModalVisible(true); // Open submission modal
+                    }
+                  }}
                   disabled={!isAssessmentCurrentlyOpen || submissionLoading}
                 >
                   <Ionicons name={assignmentButtonIcon} size={24} color="#fff" style={{ marginRight: 8 }} />
                   <Text style={styles.submitButtonText}>{assignmentButtonText}</Text>
                 </TouchableOpacity>
               )}
+              
+              {/* Submit Now Button - shown when files are selected */}
               {(submissionType === 'file' || submissionType === 'link') && (
                 <TouchableOpacity
                   testID="submit-now-button"
-                  style={[styles.submitButton, { marginTop: 12, backgroundColor: '#388e3c' }]}
+                  style={[styles.submitButton, { marginTop: 12, backgroundColor: '#10B981' }]}
                   onPress={handleSubmitAssignment}
                   disabled={!isAssessmentCurrentlyOpen || submissionLoading}
                 >
@@ -1450,7 +1728,6 @@ export default function AssessmentDetailsScreen() {
                     <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                       <ActivityIndicator color="#fff" style={{ marginRight: 10 }} />
                       <Text style={styles.submitButtonText}>
-                        {/* Show percentage if uploading a file, otherwise just "Processing" */}
                         {submissionType === 'file' && uploadProgress > 0 
                           ? `Uploading ${uploadProgress}%` 
                           : 'Processing...'}
@@ -1459,7 +1736,9 @@ export default function AssessmentDetailsScreen() {
                   ) : (
                     <>
                       <Ionicons name="cloud-upload" size={24} color="#fff" style={{ marginRight: 8 }} />
-                      <Text style={styles.submitButtonText}>Submit Now</Text>
+                      <Text style={styles.submitButtonText}>
+                        Submit {selectedFiles.length > 1 ? `${selectedFiles.length} Files` : 'Now'}
+                      </Text>
                     </>
                   )}
                 </TouchableOpacity>
@@ -1547,22 +1826,38 @@ export default function AssessmentDetailsScreen() {
         </View>
       </ScrollView>
 
+      {/* Submission Type Modal */}
       <Modal animationType="slide" transparent={true} visible={isSubmissionModalVisible} onRequestClose={() => setSubmissionModalVisible(false)}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContainer}>
-            <Text style={styles.modalTitle}>Choose Submission Type</Text>
+            <View style={styles.modalHeader}>
+              <Ionicons name="cloud-upload" size={32} color="#1967d2" />
+              <Text style={styles.modalTitle}>Choose Submission Type</Text>
+            </View>
+            
             <TouchableOpacity
               testID="upload-file-button"
               style={styles.modalButton}
               onPress={() => {
                 setSubmissionModalVisible(false);
-                handlePickDocument();
+                handlePickDocument(false);
               }}
             >
-              <Ionicons name="document-attach-outline" size={24} color="#1967d2" />
-              <Text style={styles.modalButtonText}>Upload a File</Text>
+              <View style={styles.modalButtonIconContainer}>
+                <Ionicons name="documents-outline" size={24} color="#1967d2" />
+              </View>
+              <View style={styles.modalButtonContent}>
+                <Text style={styles.modalButtonText}>Upload Files</Text>
+                <Text style={styles.modalButtonSubtext}>Select one or multiple files</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color="#9CA3AF" />
             </TouchableOpacity>
-            <Text style={styles.modalHint}>Max file size: 50MB</Text>
+            
+            <View style={styles.modalFileLimitBadge}>
+              <Ionicons name="information-circle" size={14} color="#6366F1" />
+              <Text style={styles.modalHint}>Maximum total: 50MB • Offline: single file only</Text>
+            </View>
+            
             <TouchableOpacity
               testID="submit-link-button"
               style={styles.modalButton}
@@ -1570,9 +1865,16 @@ export default function AssessmentDetailsScreen() {
                 setSubmissionType('link');
               }}
             >
-              <Ionicons name="link-outline" size={24} color="#388e3c" />
-              <Text style={styles.modalButtonText}>Submit a Link</Text>
+              <View style={[styles.modalButtonIconContainer, { backgroundColor: '#ECFDF5' }]}>
+                <Ionicons name="link-outline" size={24} color="#10B981" />
+              </View>
+              <View style={styles.modalButtonContent}>
+                <Text style={styles.modalButtonText}>Submit a Link</Text>
+                <Text style={styles.modalButtonSubtext}>Google Drive, OneDrive, etc.</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color="#9CA3AF" />
             </TouchableOpacity>
+            
             {submissionType === 'link' && (
               <View style={styles.linkInputContainer}>
                 <TextInput
@@ -1595,6 +1897,7 @@ export default function AssessmentDetailsScreen() {
                 </TouchableOpacity>
               </View>
             )}
+            
             <TouchableOpacity
               style={styles.modalCancelButton}
               onPress={() => {
@@ -1603,6 +1906,181 @@ export default function AssessmentDetailsScreen() {
               }}
             >
               <Text style={styles.modalCancelButtonText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Remove/Delete Submission Modal */}
+      <Modal 
+        animationType="fade" 
+        transparent={true} 
+        visible={isRemoveModalVisible} 
+        onRequestClose={() => { setRemoveModalVisible(false); setSelectedFilesToDelete(new Set()); }}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.removeModalContainer}>
+            <View style={styles.removeModalHeader}>
+              <View style={styles.removeModalIconContainer}>
+                <Ionicons name="warning" size={32} color="#EF4444" />
+              </View>
+              <Text style={styles.removeModalTitle}>Manage Submission</Text>
+              <Text style={styles.removeModalSubtitle}>
+                Choose what to do with your current submission
+              </Text>
+            </View>
+            
+            {/* Partial File Deletion for Multiple Files */}
+            {(() => {
+              const filenames = parseFilenames(latestAssignmentSubmission?.original_filename || null);
+              const hasMultipleFiles = filenames.length > 1;
+              
+              if (hasMultipleFiles) {
+                return (
+                  <>
+                    <Text style={styles.removeModalSelectText}>Select files to delete:</Text>
+                    <View style={{ maxHeight: 200, marginBottom: 16, width: '100%' }}>
+                      <ScrollView>
+                        {filenames.map((filename, index) => (
+                          <TouchableOpacity 
+                            key={index} 
+                            style={[
+                              styles.fileSelectItem,
+                              selectedFilesToDelete.has(index) && styles.fileSelectItemSelected
+                            ]}
+                            onPress={() => {
+                              setSelectedFilesToDelete(prev => {
+                                const newSet = new Set(prev);
+                                if (newSet.has(index)) {
+                                  newSet.delete(index);
+                                } else {
+                                  newSet.add(index);
+                                }
+                                return newSet;
+                              });
+                            }}
+                          >
+                            <View style={[styles.fileSelectCheckbox, selectedFilesToDelete.has(index) && styles.fileSelectCheckboxSelected]}>
+                              {selectedFilesToDelete.has(index) && <Ionicons name="checkmark" size={14} color="#fff" />}
+                            </View>
+                            <Text style={styles.fileSelectText} numberOfLines={1}>{filename}</Text>
+                          </TouchableOpacity>
+                        ))}
+                      </ScrollView>
+                    </View>
+                    <TouchableOpacity
+                      style={[styles.removeModalDeleteButton, selectedFilesToDelete.size === 0 && { opacity: 0.5 }]}
+                      onPress={() => {
+                        if (selectedFilesToDelete.size === 0) {
+                          Alert.alert('No Files Selected', 'Please select at least one file to delete.');
+                          return;
+                        }
+                        if (selectedFilesToDelete.size === filenames.length) {
+                          // Deleting all files - use regular delete flow
+                          handleDeleteSubmission();
+                        } else {
+                          // Partial deletion
+                          Alert.alert(
+                            'Delete Selected Files',
+                            `Are you sure you want to delete ${selectedFilesToDelete.size} file(s)? This action cannot be undone.`,
+                            [
+                              { text: 'Cancel', style: 'cancel' },
+                              {
+                                text: 'Delete',
+                                style: 'destructive',
+                                onPress: async () => {
+                                  setDeletingSubmission(true);
+                                  setRemoveModalVisible(false);
+                                  
+                                  try {
+                                    if (!netInfo?.isInternetReachable) {
+                                      Alert.alert('Offline Mode', 'You need to be online to delete specific files.');
+                                      return;
+                                    }
+                                    
+                                    const indicesToDelete = Array.from(selectedFilesToDelete).sort((a, b) => b - a);
+                                    
+                                    const response = await api.post(`/assessments/${assessmentDetail?.id}/delete-selected-files`, {
+                                      file_indices: indicesToDelete
+                                    });
+                                    
+                                    if (response.status === 200) {
+                                      Alert.alert('Success', `${indicesToDelete.length} file(s) deleted successfully!`);
+                                      setSelectedFilesToDelete(new Set());
+                                      await fetchAssessmentDetailsAndAttemptStatus();
+                                    } else {
+                                      Alert.alert('Error', response.data.message || 'Failed to delete selected files.');
+                                    }
+                                  } catch (err: any) {
+                                    console.error('Error deleting selected files:', err.response?.data || err.message);
+                                    Alert.alert('Deletion Error', err.response?.data?.message || 'Failed to delete selected files.');
+                                  } finally {
+                                    setDeletingSubmission(false);
+                                  }
+                                },
+                              },
+                            ]
+                          );
+                        }
+                      }}
+                      disabled={selectedFilesToDelete.size === 0 || isDeletingSubmission || !netInfo?.isInternetReachable}
+                    >
+                      {isDeletingSubmission ? (
+                        <ActivityIndicator color="#fff" />
+                      ) : (
+                        <>
+                          <Ionicons name="trash" size={22} color="#fff" />
+                          <Text style={styles.removeModalDeleteText}>Delete Selected ({selectedFilesToDelete.size})</Text>
+                        </>
+                      )}
+                    </TouchableOpacity>
+                  </>
+                );
+              } else {
+                return (
+                  <TouchableOpacity
+                    style={styles.removeModalDeleteButton}
+                    onPress={handleDeleteSubmission}
+                    disabled={isDeletingSubmission || !netInfo?.isInternetReachable}
+                  >
+                    {isDeletingSubmission ? (
+                      <ActivityIndicator color="#fff" />
+                    ) : (
+                      <>
+                        <Ionicons name="trash" size={22} color="#fff" />
+                        <Text style={styles.removeModalDeleteText}>Delete Submission</Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+                );
+              }
+            })()}
+            
+            {!netInfo?.isInternetReachable && (
+              <Text style={styles.removeModalOfflineWarning}>
+                <Ionicons name="cloud-offline" size={14} /> You must be online to delete
+              </Text>
+            )}
+            
+            {/* Add More Files Button */}
+            <TouchableOpacity
+              style={styles.removeModalAddButton}
+              onPress={() => {
+                setRemoveModalVisible(false);
+                setSelectedFilesToDelete(new Set());
+                handlePickDocument(false);
+              }}
+            >
+              <Ionicons name="add-circle" size={22} color="#fff" />
+              <Text style={styles.removeModalAddText}>Add More Files</Text>
+            </TouchableOpacity>
+            
+            {/* Cancel */}
+            <TouchableOpacity
+              style={styles.removeModalCancelButton}
+              onPress={() => { setRemoveModalVisible(false); setSelectedFilesToDelete(new Set()); }}
+            >
+              <Text style={styles.removeModalCancelText}>Cancel</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -1930,4 +2408,268 @@ const styles = StyleSheet.create({
   },
   downloadedText: { fontSize: isTablet ? 14 : 12, color: '#137333', flex: 1 },
   
+  // ============================================
+  // MULTIPLE FILE UPLOAD STYLES - Modern LMS UI
+  // ============================================
+  multiFileContainer: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: isTablet ? 16 : 12,
+    padding: isTablet ? 20 : 16,
+    borderWidth: 2,
+    borderColor: '#E2E8F0',
+    borderStyle: 'dashed',
+  },
+  fileSizeSummary: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: isTablet ? 16 : 12,
+    paddingBottom: isTablet ? 12 : 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E2E8F0',
+    position: 'relative',
+  },
+  fileSizeSummaryText: {
+    fontSize: isTablet ? 14 : 13,
+    color: '#64748B',
+    fontWeight: '500',
+    flex: 1,
+  },
+  fileSizeProgressBar: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    height: 3,
+    backgroundColor: '#6366F1',
+    borderRadius: 2,
+  },
+  fileSizeProgressBarWarning: {
+    backgroundColor: '#F59E0B',
+  },
+  fileCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: isTablet ? 12 : 10,
+    padding: isTablet ? 14 : 12,
+    marginBottom: isTablet ? 10 : 8,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  fileCardIcon: {
+    width: isTablet ? 48 : 40,
+    height: isTablet ? 48 : 40,
+    borderRadius: isTablet ? 12 : 10,
+    backgroundColor: '#EEF2FF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: isTablet ? 14 : 12,
+  },
+  fileCardInfo: {
+    flex: 1,
+  },
+  fileCardName: {
+    fontSize: isTablet ? 15 : 14,
+    fontWeight: '600',
+    color: '#1E293B',
+    marginBottom: 2,
+  },
+  fileCardSize: {
+    fontSize: isTablet ? 13 : 12,
+    color: '#64748B',
+  },
+  fileCardRemove: {
+    padding: 4,
+  },
+  addMoreFilesButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: isTablet ? 14 : 12,
+    marginTop: isTablet ? 8 : 6,
+    borderRadius: isTablet ? 10 : 8,
+    borderWidth: 2,
+    borderColor: '#6366F1',
+    borderStyle: 'dashed',
+    backgroundColor: '#EEF2FF',
+  },
+  addMoreFilesText: {
+    fontSize: isTablet ? 15 : 14,
+    fontWeight: '600',
+    color: '#6366F1',
+  },
+  removeSubmissionButton: {
+    backgroundColor: '#EF4444',
+  },
+
+  // ============================================
+  // MODAL STYLES - Enhanced UI
+  // ============================================
+  modalHeader: {
+    alignItems: 'center',
+    marginBottom: isTablet ? 24 : 20,
+  },
+  modalButtonIconContainer: {
+    width: isTablet ? 48 : 40,
+    height: isTablet ? 48 : 40,
+    borderRadius: isTablet ? 12 : 10,
+    backgroundColor: '#EEF2FF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: isTablet ? 14 : 12,
+  },
+  modalButtonContent: {
+    flex: 1,
+  },
+  modalButtonSubtext: {
+    fontSize: isTablet ? 13 : 12,
+    color: '#64748B',
+    marginTop: 2,
+  },
+  modalFileLimitBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#EEF2FF',
+    paddingHorizontal: isTablet ? 14 : 12,
+    paddingVertical: isTablet ? 10 : 8,
+    borderRadius: 8,
+    marginBottom: isTablet ? 16 : 12,
+  },
+
+  // ============================================
+  // REMOVE/DELETE SUBMISSION MODAL STYLES
+  // ============================================
+  removeModalContainer: {
+    width: isTablet ? '70%' : '90%',
+    maxWidth: 420,
+    backgroundColor: '#fff',
+    borderRadius: isTablet ? 20 : 16,
+    padding: isTablet ? 28 : 24,
+    alignItems: 'center',
+  },
+  removeModalHeader: {
+    alignItems: 'center',
+    marginBottom: isTablet ? 24 : 20,
+  },
+  removeModalIconContainer: {
+    width: isTablet ? 72 : 64,
+    height: isTablet ? 72 : 64,
+    borderRadius: isTablet ? 36 : 32,
+    backgroundColor: '#FEE2E2',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: isTablet ? 16 : 12,
+  },
+  removeModalTitle: {
+    fontSize: isTablet ? 22 : 20,
+    fontWeight: '700',
+    color: '#1E293B',
+    marginBottom: 8,
+  },
+  removeModalSubtitle: {
+    fontSize: isTablet ? 15 : 14,
+    color: '#64748B',
+    textAlign: 'center',
+    lineHeight: isTablet ? 22 : 20,
+  },
+  removeModalDeleteButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    width: '100%',
+    backgroundColor: '#EF4444',
+    paddingVertical: isTablet ? 16 : 14,
+    borderRadius: isTablet ? 12 : 10,
+    marginBottom: isTablet ? 12 : 10,
+  },
+  removeModalDeleteText: {
+    fontSize: isTablet ? 16 : 15,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  removeModalOfflineWarning: {
+    fontSize: isTablet ? 13 : 12,
+    color: '#F59E0B',
+    marginBottom: isTablet ? 12 : 10,
+    textAlign: 'center',
+  },
+  removeModalAddButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    width: '100%',
+    backgroundColor: '#1967d2',
+    paddingVertical: isTablet ? 16 : 14,
+    borderRadius: isTablet ? 12 : 10,
+    marginBottom: isTablet ? 16 : 14,
+  },
+  removeModalAddText: {
+    fontSize: isTablet ? 16 : 15,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  removeModalCancelButton: {
+    paddingVertical: isTablet ? 14 : 12,
+    width: '100%',
+    alignItems: 'center',
+  },
+  removeModalCancelText: {
+    fontSize: isTablet ? 16 : 15,
+    color: '#64748B',
+    fontWeight: '500',
+  },
+  removeModalSelectText: {
+    fontSize: isTablet ? 15 : 14,
+    color: '#64748B',
+    marginBottom: isTablet ? 12 : 10,
+    alignSelf: 'flex-start',
+  },
+  // File selection styles for partial deletion
+  fileSelectItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: isTablet ? 14 : 12,
+    backgroundColor: '#F8FAFC',
+    borderRadius: isTablet ? 10 : 8,
+    marginBottom: isTablet ? 10 : 8,
+    borderWidth: 2,
+    borderColor: '#E2E8F0',
+  },
+  fileSelectItemSelected: {
+    borderColor: '#EF4444',
+    backgroundColor: '#FEF2F2',
+  },
+  fileSelectCheckbox: {
+    width: isTablet ? 24 : 22,
+    height: isTablet ? 24 : 22,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: '#CBD5E1',
+    marginRight: isTablet ? 14 : 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  fileSelectCheckboxSelected: {
+    backgroundColor: '#EF4444',
+    borderColor: '#EF4444',
+  },
+  fileSelectText: {
+    flex: 1,
+    fontSize: isTablet ? 15 : 14,
+    color: '#1E293B',
+  },
+  // Submitted files container style
+  submittedFilesContainer: {
+    marginTop: 12,
+    gap: 4,
+  },
 });
