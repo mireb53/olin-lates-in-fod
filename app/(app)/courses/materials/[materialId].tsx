@@ -6,19 +6,19 @@ import { Stack, useLocalSearchParams } from 'expo-router';
 import * as Sharing from 'expo-sharing';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    Dimensions,
-    Image,
-    Linking,
-    Modal,
-    Platform,
-    RefreshControl,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  Dimensions,
+  Image,
+  Linking,
+  Modal,
+  Platform,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
@@ -31,6 +31,21 @@ import FileActionSheet from '../../../../components/ui/FileActionSheet';
 import { useNetworkStatus } from '../../../../context/NetworkContext';
 import api, { getAuthorizationHeader, getUserData, initializeAuth } from '../../../../lib/api';
 
+// File item in the files array
+interface MaterialFile {
+  path: string;
+  original_name: string;
+  size: number;
+  type: string;
+  extension: string;
+}
+
+// Link item in the links array
+interface MaterialLink {
+  url: string;
+  title?: string;
+}
+
 interface MaterialDetail {
   id: number;
   title: string;
@@ -42,6 +57,9 @@ interface MaterialDetail {
   available_at?: string;
   unavailable_at?: string;
   formatted_file_size?: string;
+  // Multiple files and links support
+  files?: MaterialFile[];
+  links?: MaterialLink[];
 }
 
 type FileType = 'image' | 'pdf' | 'document' | 'video' | 'audio' | 'code' | 'other';
@@ -168,6 +186,46 @@ const getMaterialColor = (type: string) => {
     default:
       return '#6c757d';
   }
+};
+
+// Helper function to get icon by file extension
+const getFileIconByExtension = (extension?: string): string => {
+  const ext = extension?.toLowerCase() || '';
+  if (['pdf'].includes(ext)) return 'document-attach';
+  if (['doc', 'docx'].includes(ext)) return 'document-text';
+  if (['xls', 'xlsx', 'csv'].includes(ext)) return 'grid';
+  if (['ppt', 'pptx'].includes(ext)) return 'easel';
+  if (['jpg', 'jpeg', 'png', 'gif', 'svg', 'webp', 'bmp'].includes(ext)) return 'image';
+  if (['mp4', 'mov', 'avi', 'webm', 'mkv'].includes(ext)) return 'videocam';
+  if (['mp3', 'wav', 'ogg', 'aac', 'flac', 'm4a'].includes(ext)) return 'musical-notes';
+  if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) return 'archive';
+  if (['js', 'ts', 'py', 'php', 'html', 'css', 'json', 'xml'].includes(ext)) return 'code-slash';
+  if (['txt', 'md', 'log'].includes(ext)) return 'document-text';
+  return 'document';
+};
+
+// Helper function to get color by file extension
+const getFileColorByExtension = (extension?: string): string => {
+  const ext = extension?.toLowerCase() || '';
+  if (['pdf'].includes(ext)) return '#dc2626';
+  if (['doc', 'docx'].includes(ext)) return '#2563eb';
+  if (['xls', 'xlsx', 'csv'].includes(ext)) return '#16a34a';
+  if (['ppt', 'pptx'].includes(ext)) return '#f59e0b';
+  if (['jpg', 'jpeg', 'png', 'gif', 'svg', 'webp', 'bmp'].includes(ext)) return '#8b5cf6';
+  if (['mp4', 'mov', 'avi', 'webm', 'mkv'].includes(ext)) return '#ec4899';
+  if (['mp3', 'wav', 'ogg', 'aac', 'flac', 'm4a'].includes(ext)) return '#06b6d4';
+  if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) return '#78716c';
+  if (['js', 'ts', 'py', 'php', 'html', 'css', 'json', 'xml'].includes(ext)) return '#6366f1';
+  return '#6b7280';
+};
+
+// Format bytes to human readable size
+const formatBytes = (bytes: number): string => {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 };
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
@@ -589,6 +647,46 @@ export default function MaterialDetailsScreen() {
       }
     } catch (error) {
       Alert.alert('Error', 'Failed to open the link.');
+    }
+  };
+
+  // Handle opening a file from the multiple files list
+  const handleOpenFileFromList = async (file: MaterialFile, fileIndex: number) => {
+    if (!netInfo?.isInternetReachable) {
+      Alert.alert('Offline Mode', 'Internet connection required to download this file.');
+      return;
+    }
+
+    try {
+      // Generate signed URL for the specific file
+      const response = await api.post(`/materials/${materialDetail?.id}/generate-link`, {
+        file_index: fileIndex
+      });
+      
+      if (response.data && response.data.url) {
+        const signedUrl = response.data.url;
+        const extension = file.extension?.toLowerCase();
+        
+        // PDF Files -> Use Google Docs Viewer
+        if (extension === 'pdf') {
+          const viewerUrl = `https://docs.google.com/viewer?url=${encodeURIComponent(signedUrl)}&embedded=true`;
+          await Linking.openURL(viewerUrl);
+        }
+        // Office Documents -> Use Microsoft Office Online Viewer
+        else if (extension && ['doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx'].includes(extension)) {
+          const viewerUrl = `https://view.officeapps.live.com/op/view.aspx?src=${encodeURIComponent(signedUrl)}`;
+          await Linking.openURL(viewerUrl);
+        }
+        // Other files -> Direct download
+        else {
+          await Linking.openURL(signedUrl);
+        }
+      } else {
+        Alert.alert('Error', 'Failed to generate download link.');
+      }
+    } catch (error) {
+      console.error('Error opening file from list:', error);
+      Alert.alert('Error', 'Failed to open file. Please try again.');
     }
   };
 
@@ -1336,15 +1434,78 @@ export default function MaterialDetailsScreen() {
   );
 
   const renderAudioViewer = () => {
-    const playAudio = async () => {
+    const [isPlaying, setIsPlaying] = useState(false);
+    const [duration, setDuration] = useState(0);
+    const [position, setPosition] = useState(0);
+
+    const playPauseAudio = async () => {
       try {
-        if (sound) await sound.unloadAsync();
-        const { sound: newSound } = await Audio.Sound.createAsync({ uri: downloadedFileUri! }, { shouldPlay: true });
+        if (sound) {
+          const status = await sound.getStatusAsync();
+          if (status.isLoaded) {
+            if (status.isPlaying) {
+              await sound.pauseAsync();
+              setIsPlaying(false);
+            } else {
+              await sound.playAsync();
+              setIsPlaying(true);
+            }
+            return;
+          }
+        }
+        
+        // Create new sound if not exists
+        const { sound: newSound } = await Audio.Sound.createAsync(
+          { uri: downloadedFileUri! }, 
+          { shouldPlay: true },
+          (status) => {
+            if (status.isLoaded) {
+              setIsPlaying(status.isPlaying);
+              setDuration(status.durationMillis || 0);
+              setPosition(status.positionMillis || 0);
+              
+              if (status.didJustFinish) {
+                setIsPlaying(false);
+                setPosition(0);
+              }
+            }
+          }
+        );
         setSound(newSound);
-        newSound.setOnPlaybackStatusUpdate(setAudioStatus);
+        setIsPlaying(true);
       } catch (error) {
         Alert.alert('Error', 'Could not play audio file.');
       }
+    };
+
+    const seekAudio = async (value: number) => {
+      if (sound) {
+        await sound.setPositionAsync(value);
+        setPosition(value);
+      }
+    };
+
+    const skipForward = async () => {
+      if (sound && duration > 0) {
+        const newPosition = Math.min(position + 10000, duration);
+        await sound.setPositionAsync(newPosition);
+        setPosition(newPosition);
+      }
+    };
+
+    const skipBackward = async () => {
+      if (sound) {
+        const newPosition = Math.max(position - 10000, 0);
+        await sound.setPositionAsync(newPosition);
+        setPosition(newPosition);
+      }
+    };
+
+    const formatTime = (millis: number) => {
+      const totalSeconds = Math.floor(millis / 1000);
+      const minutes = Math.floor(totalSeconds / 60);
+      const seconds = totalSeconds % 60;
+      return `${minutes}:${seconds.toString().padStart(2, '0')}`;
     };
 
     return (
@@ -1361,11 +1522,54 @@ export default function MaterialDetailsScreen() {
           </View>
         </View>
         <View style={styles.audioPlayerContainer}>
-          <Ionicons name="musical-notes" size={64} color="#4285f4" />
-          <Text style={styles.audioFileName}>{materialDetail?.title}</Text>
-          <TouchableOpacity style={styles.playButton} onPress={playAudio}>
-            <Ionicons name="play-circle" size={48} color="#4285f4" />
-          </TouchableOpacity>
+          {/* Album Art / Icon */}
+          <View style={styles.audioArtContainer}>
+            <Ionicons name="musical-notes" size={48} color="#4285f4" />
+          </View>
+          
+          {/* Title */}
+          <Text style={styles.audioFileName} numberOfLines={2}>{materialDetail?.title}</Text>
+          
+          {/* Progress Bar */}
+          <View style={styles.audioProgressContainer}>
+            <Text style={styles.audioTimeText}>{formatTime(position)}</Text>
+            <View style={styles.audioSliderContainer}>
+              <View style={styles.audioSliderTrack}>
+                <View 
+                  style={[
+                    styles.audioSliderFill, 
+                    { width: duration > 0 ? `${(position / duration) * 100}%` : '0%' }
+                  ]} 
+                />
+              </View>
+              <TouchableOpacity 
+                style={styles.audioSliderThumb}
+                onPress={() => {}}
+              />
+            </View>
+            <Text style={styles.audioTimeText}>{formatTime(duration)}</Text>
+          </View>
+          
+          {/* Controls */}
+          <View style={styles.audioControlsRow}>
+            <TouchableOpacity style={styles.audioControlButton} onPress={skipBackward}>
+              <Ionicons name="play-back" size={28} color="#4285f4" />
+              <Text style={styles.audioSkipText}>10s</Text>
+            </TouchableOpacity>
+            
+            <TouchableOpacity style={styles.audioPlayPauseButton} onPress={playPauseAudio}>
+              <Ionicons 
+                name={isPlaying ? "pause-circle" : "play-circle"} 
+                size={64} 
+                color="#4285f4" 
+              />
+            </TouchableOpacity>
+            
+            <TouchableOpacity style={styles.audioControlButton} onPress={skipForward}>
+              <Ionicons name="play-forward" size={28} color="#4285f4" />
+              <Text style={styles.audioSkipText}>10s</Text>
+            </TouchableOpacity>
+          </View>
         </View>
         <View style={styles.downloadedIndicator}>
           <Ionicons name="checkmark-circle" size={16} color="#137333" />
@@ -1579,9 +1783,88 @@ export default function MaterialDetailsScreen() {
           )}
         </View>
 
-        {/* Action Buttons Section */}
+        {/* Multiple Files Section */}
+        {materialDetail.files && materialDetail.files.length > 0 && (
+          <View style={styles.sectionContainer}>
+            <Text style={styles.sectionHeader}>
+              <Ionicons name="documents" size={18} color="#1967d2" /> Files ({materialDetail.files.length})
+            </Text>
+            <View style={styles.filesListContainer}>
+              {materialDetail.files.map((file, index) => (
+                <TouchableOpacity 
+                  key={index} 
+                  style={styles.fileItemCard}
+                  onPress={() => {
+                    if (netInfo?.isInternetReachable) {
+                      // Generate signed URL and open file
+                      handleOpenFileFromList(file, index);
+                    } else {
+                      Alert.alert('Offline', 'Internet connection required to download this file.');
+                    }
+                  }}
+                >
+                  <View style={styles.fileItemIcon}>
+                    <Ionicons 
+                      name={getFileIconByExtension(file.extension) as any} 
+                      size={24} 
+                      color={getFileColorByExtension(file.extension)} 
+                    />
+                  </View>
+                  <View style={styles.fileItemInfo}>
+                    <Text style={styles.fileItemName} numberOfLines={1}>{file.original_name}</Text>
+                    <Text style={styles.fileItemMeta}>
+                      {file.extension?.toUpperCase()} • {formatBytes(file.size)}
+                    </Text>
+                  </View>
+                  <Ionicons name="download-outline" size={22} color="#1967d2" />
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        )}
+
+        {/* Multiple Links Section */}
+        {materialDetail.links && materialDetail.links.length > 0 && (
+          <View style={styles.sectionContainer}>
+            <Text style={styles.sectionHeader}>
+              <Ionicons name="link" size={18} color="#10B981" /> Links ({materialDetail.links.length})
+            </Text>
+            <View style={styles.linksListContainer}>
+              {materialDetail.links.map((link, index) => (
+                <TouchableOpacity 
+                  key={index} 
+                  style={styles.linkItemCard}
+                  onPress={() => handleOpenLink(link.url)}
+                  disabled={!netInfo?.isInternetReachable}
+                >
+                  <View style={styles.linkItemIcon}>
+                    <Ionicons name="globe-outline" size={24} color="#10B981" />
+                  </View>
+                  <View style={styles.linkItemInfo}>
+                    <Text style={styles.linkItemTitle} numberOfLines={1}>
+                      {link.title || 'External Link'}
+                    </Text>
+                    <Text style={styles.linkItemUrl} numberOfLines={1}>{link.url}</Text>
+                  </View>
+                  <Ionicons 
+                    name="open-outline" 
+                    size={20} 
+                    color={netInfo?.isInternetReachable ? '#10B981' : '#9aa0a6'} 
+                  />
+                </TouchableOpacity>
+              ))}
+            </View>
+            {!netInfo?.isInternetReachable && (
+              <View style={styles.offlineLinkNotice}>
+                <Text style={styles.offlineLinkText}>Internet connection required to open links.</Text>
+              </View>
+            )}
+          </View>
+        )}
+
+        {/* Action Buttons Section - Only show for legacy single file */}
         {/* *** MODIFIED *** - Made material type check case-insensitive and null-safe */}
-        {materialDetail.material_type?.toLowerCase() !== 'link' && materialDetail.file_path && (
+        {materialDetail.material_type?.toLowerCase() !== 'link' && materialDetail.file_path && (!materialDetail.files || materialDetail.files.length === 0) && (
           <View style={styles.sectionContainer}>
             <Text style={styles.sectionHeader}>File Actions</Text>
 
@@ -2185,5 +2468,148 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#d4d4d4',
     padding: 16,
+  },
+  
+  // Multiple Files Section Styles
+  filesListContainer: {
+    gap: 8,
+  },
+  fileItemCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f0f7ff',
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+  },
+  fileItemIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 10,
+    backgroundColor: '#ffffff',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  fileItemInfo: {
+    flex: 1,
+    marginRight: 8,
+  },
+  fileItemName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1e40af',
+    marginBottom: 2,
+  },
+  fileItemMeta: {
+    fontSize: 12,
+    color: '#6b7280',
+  },
+  
+  // Multiple Links Section Styles
+  linksListContainer: {
+    gap: 8,
+  },
+  linkItemCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#ecfdf5',
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#a7f3d0',
+  },
+  linkItemIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 10,
+    backgroundColor: '#ffffff',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  linkItemInfo: {
+    flex: 1,
+    marginRight: 8,
+  },
+  linkItemTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#047857',
+    marginBottom: 2,
+  },
+  linkItemUrl: {
+    fontSize: 12,
+    color: '#6b7280',
+  },
+  
+  // Improved Audio Player Styles
+  audioArtContainer: {
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    backgroundColor: '#e8f0fe',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  audioProgressContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    width: '100%',
+    paddingHorizontal: 16,
+    marginBottom: 20,
+  },
+  audioTimeText: {
+    fontSize: 12,
+    color: '#5f6368',
+    fontWeight: '500',
+    minWidth: 40,
+    textAlign: 'center',
+  },
+  audioSliderContainer: {
+    flex: 1,
+    height: 24,
+    justifyContent: 'center',
+    marginHorizontal: 8,
+  },
+  audioSliderTrack: {
+    height: 4,
+    backgroundColor: '#e0e0e0',
+    borderRadius: 2,
+    overflow: 'hidden',
+  },
+  audioSliderFill: {
+    height: '100%',
+    backgroundColor: '#4285f4',
+    borderRadius: 2,
+  },
+  audioSliderThumb: {
+    position: 'absolute',
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#4285f4',
+  },
+  audioControlsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 24,
+  },
+  audioControlButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 8,
+  },
+  audioPlayPauseButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  audioSkipText: {
+    fontSize: 10,
+    color: '#4285f4',
+    marginTop: 2,
   },
 });

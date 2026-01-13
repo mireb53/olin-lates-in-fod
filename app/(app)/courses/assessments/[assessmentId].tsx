@@ -52,6 +52,21 @@ import {
     startOfflineQuiz
 } from '../../../../lib/localDb';
 
+// File item in the files array (for assessments)
+interface AssessmentFile {
+  path: string;
+  original_name: string;
+  size: number;
+  type: string;
+  extension: string;
+}
+
+// Link item in the links array (for assessments)
+interface AssessmentLink {
+  url: string;
+  title?: string;
+}
+
 // Interface definitions (These should match your existing definitions)
 interface AssessmentDetail {
   id: number;
@@ -69,6 +84,9 @@ interface AssessmentDetail {
   total_points: number | null;
   assessment_file_url?: string;
   allow_answer_review: boolean;
+  // Multiple files and links support
+  files?: AssessmentFile[];
+  links?: AssessmentLink[];
 }
 
 interface AttemptStatus {
@@ -223,6 +241,54 @@ const formatBytes = (bytes: number, decimals = 2) => {
   const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+};
+
+// Enhanced file icon by extension - more specific icons
+const getFileIconByExtension = (extension: string): string => {
+  const ext = extension?.toLowerCase() || '';
+  // Images
+  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'ico'].includes(ext)) return 'image';
+  // Documents
+  if (['pdf'].includes(ext)) return 'document-text';
+  if (['doc', 'docx'].includes(ext)) return 'document';
+  if (['xls', 'xlsx', 'csv'].includes(ext)) return 'grid';
+  if (['ppt', 'pptx'].includes(ext)) return 'easel';
+  if (['txt', 'rtf', 'odt'].includes(ext)) return 'reader';
+  // Archives
+  if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) return 'archive';
+  // Audio
+  if (['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'].includes(ext)) return 'musical-notes';
+  // Video
+  if (['mp4', 'avi', 'mov', 'mkv', 'wmv', 'webm'].includes(ext)) return 'videocam';
+  // Code
+  if (['html', 'css', 'js', 'ts', 'json', 'xml', 'php', 'py', 'java', 'c', 'cpp'].includes(ext)) return 'code-slash';
+  return 'document-attach';
+};
+
+// Get color by extension for more visual variety
+const getFileColorByExtension = (extension: string): string => {
+  const ext = extension?.toLowerCase() || '';
+  // Images - Blue
+  if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'ico'].includes(ext)) return '#4285f4';
+  // PDF - Red
+  if (['pdf'].includes(ext)) return '#ea4335';
+  // Word docs - Blue
+  if (['doc', 'docx'].includes(ext)) return '#4285f4';
+  // Excel - Green
+  if (['xls', 'xlsx', 'csv'].includes(ext)) return '#34a853';
+  // PowerPoint - Orange
+  if (['ppt', 'pptx'].includes(ext)) return '#ff6d00';
+  // Text - Gray
+  if (['txt', 'rtf', 'odt'].includes(ext)) return '#5f6368';
+  // Archives - Yellow
+  if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) return '#fbbc05';
+  // Audio - Purple
+  if (['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'].includes(ext)) return '#a855f7';
+  // Video - Red
+  if (['mp4', 'avi', 'mov', 'mkv', 'wmv', 'webm'].includes(ext)) return '#ef4444';
+  // Code - Teal
+  if (['html', 'css', 'js', 'ts', 'json', 'xml', 'php', 'py', 'java', 'c', 'cpp'].includes(ext)) return '#14b8a6';
+  return '#6b7280';
 };
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
@@ -1531,6 +1597,94 @@ export default function AssessmentDetailsScreen() {
             )}
           </View>
         )}
+
+        {/* Multiple Assessment Files Section */}
+        {isAssignmentType && assessmentDetail.files && assessmentDetail.files.length > 0 && (
+          <View style={styles.sectionContainer}>
+            <Text style={styles.sectionHeader}>Assessment Files ({assessmentDetail.files.length})</Text>
+            <View style={styles.filesListContainer}>
+              {assessmentDetail.files.map((file, index) => (
+                <View key={index} style={styles.assessmentFileCard}>
+                  <View style={[styles.assessmentFileIconContainer, { backgroundColor: getFileColorByExtension(file.extension) + '20' }]}>
+                    <Ionicons 
+                      name={getFileIconByExtension(file.extension) as any} 
+                      size={28} 
+                      color={getFileColorByExtension(file.extension)} 
+                    />
+                  </View>
+                  <View style={styles.assessmentFileInfoContainer}>
+                    <Text style={styles.assessmentFileNameText} numberOfLines={2}>{file.original_name}</Text>
+                    <Text style={styles.assessmentFileSizeText}>
+                      {formatBytes(file.size)} • {file.extension?.toUpperCase() || 'FILE'}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    style={[styles.assessmentFileDownloadButton, !netInfo?.isInternetReachable && styles.assessmentFileDownloadButtonDisabled]}
+                    onPress={() => {
+                      if (netInfo?.isInternetReachable && assessmentDetail.id) {
+                        // Construct download URL for this specific file
+                        const fileUrl = `${api.defaults.baseURL}/assessments/${assessmentDetail.id}/file/${index}`;
+                        Linking.openURL(fileUrl).catch(() => {
+                          Alert.alert('Error', 'Could not open the file.');
+                        });
+                      } else {
+                        Alert.alert('Offline', 'You need to be online to download this file.');
+                      }
+                    }}
+                    disabled={!netInfo?.isInternetReachable}
+                  >
+                    <Ionicons 
+                      name="download-outline" 
+                      size={20} 
+                      color={netInfo?.isInternetReachable ? '#4285f4' : '#9ca3af'} 
+                    />
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </View>
+          </View>
+        )}
+
+        {/* Multiple Assessment Links Section */}
+        {isAssignmentType && assessmentDetail.links && assessmentDetail.links.length > 0 && (
+          <View style={styles.sectionContainer}>
+            <Text style={styles.sectionHeader}>Assessment Links ({assessmentDetail.links.length})</Text>
+            <View style={styles.linksListContainer}>
+              {assessmentDetail.links.map((link, index) => (
+                <TouchableOpacity
+                  key={index}
+                  style={[styles.assessmentLinkCard, !netInfo?.isInternetReachable && styles.assessmentLinkCardDisabled]}
+                  onPress={() => {
+                    if (netInfo?.isInternetReachable) {
+                      Linking.openURL(link.url).catch(() => {
+                        Alert.alert('Error', 'Could not open the link.');
+                      });
+                    } else {
+                      Alert.alert('Offline', 'You need to be online to open this link.');
+                    }
+                  }}
+                  disabled={!netInfo?.isInternetReachable}
+                >
+                  <View style={styles.assessmentLinkIconContainer}>
+                    <Ionicons name="link" size={24} color="#6366f1" />
+                  </View>
+                  <View style={styles.assessmentLinkInfoContainer}>
+                    <Text style={styles.assessmentLinkTitleText} numberOfLines={1}>
+                      {link.title || 'External Link'}
+                    </Text>
+                    <Text style={styles.assessmentLinkUrlText} numberOfLines={1}>{link.url}</Text>
+                  </View>
+                  <Ionicons 
+                    name="open-outline" 
+                    size={20} 
+                    color={netInfo?.isInternetReachable ? '#6366f1' : '#9ca3af'} 
+                  />
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        )}
+
         {isAssignmentType && latestAssignmentSubmission?.has_submitted_file && (
           <View style={styles.sectionContainer}>
             <Text style={styles.sectionHeader}>Previous Submission</Text>
@@ -2671,5 +2825,90 @@ const styles = StyleSheet.create({
   submittedFilesContainer: {
     marginTop: 12,
     gap: 4,
+  },
+  // Multiple Assessment Files List Styles
+  filesListContainer: {
+    gap: isTablet ? 14 : 12,
+  },
+  assessmentFileCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f8f9fa',
+    borderRadius: isTablet ? 12 : 10,
+    padding: isTablet ? 16 : 14,
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+  },
+  assessmentFileIconContainer: {
+    width: isTablet ? 56 : 48,
+    height: isTablet ? 56 : 48,
+    borderRadius: isTablet ? 14 : 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: isTablet ? 16 : 14,
+  },
+  assessmentFileInfoContainer: {
+    flex: 1,
+    marginRight: isTablet ? 14 : 12,
+  },
+  assessmentFileNameText: {
+    fontSize: isTablet ? 16 : 14,
+    fontWeight: '500',
+    color: '#202124',
+    marginBottom: 4,
+  },
+  assessmentFileSizeText: {
+    fontSize: isTablet ? 13 : 12,
+    color: '#5f6368',
+  },
+  assessmentFileDownloadButton: {
+    width: isTablet ? 44 : 40,
+    height: isTablet ? 44 : 40,
+    borderRadius: isTablet ? 22 : 20,
+    backgroundColor: '#e8f0fe',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  assessmentFileDownloadButtonDisabled: {
+    backgroundColor: '#f1f3f4',
+  },
+  // Multiple Assessment Links List Styles
+  linksListContainer: {
+    gap: isTablet ? 12 : 10,
+  },
+  assessmentLinkCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#f8f9fa',
+    borderRadius: isTablet ? 12 : 10,
+    padding: isTablet ? 16 : 14,
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+  },
+  assessmentLinkCardDisabled: {
+    opacity: 0.6,
+  },
+  assessmentLinkIconContainer: {
+    width: isTablet ? 48 : 42,
+    height: isTablet ? 48 : 42,
+    borderRadius: isTablet ? 24 : 21,
+    backgroundColor: '#eef2ff',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: isTablet ? 14 : 12,
+  },
+  assessmentLinkInfoContainer: {
+    flex: 1,
+    marginRight: isTablet ? 14 : 12,
+  },
+  assessmentLinkTitleText: {
+    fontSize: isTablet ? 16 : 14,
+    fontWeight: '500',
+    color: '#202124',
+    marginBottom: 2,
+  },
+  assessmentLinkUrlText: {
+    fontSize: isTablet ? 13 : 12,
+    color: '#6366f1',
   },
 });
