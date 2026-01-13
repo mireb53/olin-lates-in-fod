@@ -2,17 +2,21 @@
  * DocumentViewer Component
  * 
  * View Office documents (Word, Excel, PowerPoint) using:
- * - Microsoft Office Online viewer
+ * - Native apps via IntentLauncher for downloaded files (offline support)
+ * - Microsoft Office Online viewer for online files
  * - Google Docs viewer as fallback
- * 
- * Note: Requires online connection for viewing
  */
 
 import { Ionicons } from '@expo/vector-icons';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as IntentLauncher from 'expo-intent-launcher';
+import * as Sharing from 'expo-sharing';
 import React, { useRef, useState } from 'react';
 import {
     ActivityIndicator,
+    Alert,
     Modal,
+    Platform,
     StatusBar,
     StyleSheet,
     Text,
@@ -53,6 +57,23 @@ const getDocumentInfo = (fileName: string): { type: string; icon: string; color:
   }
 };
 
+// Get MIME type for document
+const getMimeType = (fileName: string): string => {
+  const ext = fileName.split('.').pop()?.toLowerCase() || '';
+  const mimeMap: { [key: string]: string } = {
+    'doc': 'application/msword',
+    'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'xls': 'application/vnd.ms-excel',
+    'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'ppt': 'application/vnd.ms-powerpoint',
+    'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'txt': 'text/plain',
+    'rtf': 'application/rtf',
+    'odt': 'application/vnd.oasis.opendocument.text',
+  };
+  return mimeMap[ext] || 'application/octet-stream';
+};
+
 export default function DocumentViewer({
   uri,
   fileName,
@@ -71,6 +92,42 @@ export default function DocumentViewer({
   const [viewerType, setViewerType] = useState<'microsoft' | 'google'>('microsoft');
 
   const documentInfo = getDocumentInfo(fileName);
+
+  // Open document with native app (for cached files)
+  const openWithNativeApp = async () => {
+    if (!isCached || !uri.startsWith('file://')) {
+      Alert.alert('Error', 'File must be downloaded first');
+      return;
+    }
+
+    try {
+      if (Platform.OS === 'android') {
+        // Get content URI for the file
+        const contentUri = await FileSystem.getContentUriAsync(uri);
+        const mimeType = getMimeType(fileName);
+
+        // Launch with ACTION_VIEW to open with appropriate app
+        await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
+          data: contentUri,
+          flags: 1, // FLAG_GRANT_READ_URI_PERMISSION
+          type: mimeType,
+        });
+      } else {
+        // iOS: Use Sharing API
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(uri, {
+            dialogTitle: `Open ${fileName}`,
+          });
+        }
+      }
+    } catch (error) {
+      console.error('Error opening document with native app:', error);
+      Alert.alert(
+        'No App Found',
+        'Please install an app that can open this document type (e.g., Microsoft Office, Google Docs, WPS Office).'
+      );
+    }
+  };
 
   // Microsoft Office Online viewer
   const getMicrosoftViewerUrl = () => {
@@ -119,14 +176,38 @@ export default function DocumentViewer({
   };
 
   const renderDocumentContent = (isFullscreenMode: boolean = false) => {
+    // If document is cached/downloaded, show option to open with native app
+    if (isCached && uri.startsWith('file://')) {
+      return (
+        <View style={styles.offlineContainer}>
+          <Ionicons name={documentInfo.icon as any} size={64} color={documentInfo.color} />
+          <Text style={styles.offlineTitle}>Document Downloaded</Text>
+          <Text style={styles.offlineText}>
+            This {documentInfo.type} is ready to open.{'\n'}
+            Tap the button below to view it with an installed app.
+          </Text>
+          <TouchableOpacity style={[styles.downloadButton, { backgroundColor: documentInfo.color }]} onPress={openWithNativeApp}>
+            <Ionicons name="open-outline" size={20} color="#fff" />
+            <Text style={styles.downloadButtonText}>Open with App</Text>
+          </TouchableOpacity>
+          {onShare && (
+            <TouchableOpacity style={styles.secondaryButton} onPress={onShare}>
+              <Ionicons name="share-outline" size={20} color={documentInfo.color} />
+              <Text style={[styles.secondaryButtonText, { color: documentInfo.color }]}>Share</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      );
+    }
+    
     if (!isOnline) {
       return (
         <View style={styles.offlineContainer}>
           <Ionicons name="cloud-offline" size={64} color="#9ca3af" />
           <Text style={styles.offlineTitle}>No Internet Connection</Text>
           <Text style={styles.offlineText}>
-            Office documents require an internet connection to view.
-            {'\n'}Download the file to open with another app.
+            Office documents require an internet connection to preview.{'\n'}
+            Download the file to open with another app offline.
           </Text>
           {onDownload && (
             <TouchableOpacity style={styles.downloadButton} onPress={onDownload}>
@@ -475,6 +556,22 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: '#fff',
+  },
+  secondaryButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'transparent',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    marginTop: 12,
+  },
+  secondaryButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
   },
   footer: {
     flexDirection: 'row',

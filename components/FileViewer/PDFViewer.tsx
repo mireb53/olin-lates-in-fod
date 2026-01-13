@@ -55,11 +55,21 @@ export default function PDFViewer({
   const [hasError, setHasError] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
-  // Use Google Docs viewer for PDF rendering
+  // Use local file viewer for cached PDFs, Google Docs only for online
   const getPDFViewerUrl = () => {
-    // Encode the URI for use in Google Docs viewer
-    const encodedUri = encodeURIComponent(uri);
-    return `https://docs.google.com/viewer?url=${encodedUri}&embedded=true`;
+    // If file is cached (downloaded), use local file URI
+    if (isCached && uri.startsWith('file://')) {
+      return uri;
+    }
+    
+    // Only use Google Docs viewer if online and NOT cached
+    if (isOnline && !isCached) {
+      const encodedUri = encodeURIComponent(uri);
+      return `https://docs.google.com/viewer?url=${encodedUri}&embedded=true`;
+    }
+    
+    // Fallback to direct URI
+    return uri;
   };
 
   // Alternative: Microsoft Office Online viewer

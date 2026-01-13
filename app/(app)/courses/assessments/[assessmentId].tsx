@@ -27,6 +27,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 // Import UI components
 import FileViewer, { detectFileType } from '../../../../components/FileViewer';
 import { SubmittedFileCard } from '../../../../components/ui';
+import DownloadProgressOverlay from '../../../../components/ui/DownloadProgressOverlay';
+import DownloadedFilesCarousel from '../../../../components/ui/DownloadedFilesCarousel';
+import FileActionSheet from '../../../../components/ui/FileActionSheet';
 
 // Responsive design helper
 const { width: screenWidth } = Dimensions.get('window');
@@ -361,6 +364,16 @@ export default function AssessmentDetailsScreen() {
   const [showFileViewer, setShowFileViewer] = useState(false);
   const [currentDownloadingFileIndex, setCurrentDownloadingFileIndex] = useState<number | null>(null);
 
+  // State for file action sheet (when user taps download icon on a file)
+  const [selectedFileForAction, setSelectedFileForAction] = useState<{file: AssessmentFile, index: number} | null>(null);
+  const [showFileActionSheet, setShowFileActionSheet] = useState(false);
+  
+  // Download overlay state
+  const [showDownloadOverlay, setShowDownloadOverlay] = useState(false);
+  const [downloadedBytes, setDownloadedBytes] = useState(0);
+  const [totalBytes, setTotalBytes] = useState(0);
+  const [downloadStatus, setDownloadStatus] = useState<'downloading' | 'processing' | 'complete' | 'error'>('downloading');
+
   usePendingSyncNotification(netInfo?.isInternetReachable ?? null, 'assessment-details');
 
   React.useEffect(() => {
@@ -395,27 +408,39 @@ export default function AssessmentDetailsScreen() {
     }
   };
 
-  // Handle opening a file from the multiple files list
-  const handleOpenFileFromList = async (file: AssessmentFile, fileIndex: number) => {
-    if (!netInfo?.isInternetReachable) {
-      Alert.alert('Offline Mode', 'Internet connection required to download this file.');
-      return;
-    }
-
+  // Handle tapping on a file from the files list
+  const handleFileCardPress = (file: AssessmentFile, fileIndex: number) => {
     // Check if file is already downloaded
     const existingDownload = downloadedFiles.find(d => d.assessmentFileIndex === fileIndex);
     if (existingDownload) {
-      // Open in FileViewer
+      // Open in FileViewer directly
       setActiveFileViewerUri(existingDownload.uri);
       setActiveFileViewerName(existingDownload.fileName);
       setShowFileViewer(true);
       return;
     }
+    
+    // Show download options for non-downloaded files
+    if (!netInfo?.isInternetReachable) {
+      Alert.alert('Offline Mode', 'Internet connection required to download this file.');
+      return;
+    }
+    
+    // Set selected file and show action sheet
+    setSelectedFileForAction({ file, index: fileIndex });
+    setShowFileActionSheet(true);
+  };
 
-    // Download the file first
+  // Download file to app storage (from files list)
+  const downloadFileToApp = async (file: AssessmentFile, fileIndex: number) => {
+    setShowFileActionSheet(false);
     setCurrentDownloadingFileIndex(fileIndex);
     setIsDownloading(true);
     setDownloadProgress(0);
+    setDownloadedBytes(0);
+    setTotalBytes(0);
+    setDownloadStatus('downloading');
+    setShowDownloadOverlay(true);
 
     try {
       const downloadUrl = `${api.defaults.baseURL}/assessments/${assessmentDetail?.id}/file/${fileIndex}`;
@@ -424,16 +449,18 @@ export default function AssessmentDetailsScreen() {
       const fileName = `${sanitizedName}_${assessmentDetail?.id}_${fileIndex}${fileExtension ? `.${fileExtension}` : ''}`;
       const localUri = FileSystem.documentDirectory + fileName;
 
-      console.log('Downloading assessment file from list:', downloadUrl);
+      console.log('Downloading file to app:', downloadUrl);
 
       const downloadResumable = FileSystem.createDownloadResumable(
         downloadUrl,
         localUri,
-        {}, // May need auth headers if protected
+        {},
         ({ totalBytesWritten, totalBytesExpectedToWrite }) => {
           if (totalBytesExpectedToWrite > 0) {
             const progress = totalBytesWritten / totalBytesExpectedToWrite;
             setDownloadProgress(Math.round(progress * 100));
+            setDownloadedBytes(totalBytesWritten);
+            setTotalBytes(totalBytesExpectedToWrite);
           }
         }
       );
@@ -441,10 +468,10 @@ export default function AssessmentDetailsScreen() {
       const result = await downloadResumable.downloadAsync();
 
       if (result?.uri) {
+        setDownloadStatus('processing');
         const fileInfo = await FileSystem.getInfoAsync(result.uri);
         
         if (fileInfo.exists && 'size' in fileInfo && fileInfo.size > 0) {
-          // Add to downloaded files list
           const newDownloadedFile: DownloadedFileInfo = {
             uri: result.uri,
             fileName: file.original_name,
@@ -455,15 +482,13 @@ export default function AssessmentDetailsScreen() {
           };
           
           setDownloadedFiles(prev => [...prev, newDownloadedFile]);
+          setDownloadStatus('complete');
           
-          console.log('File downloaded successfully:', result.uri);
+          console.log('File downloaded to app:', result.uri);
           
-          // Open in FileViewer
           setTimeout(() => {
-            setActiveFileViewerUri(result.uri);
-            setActiveFileViewerName(file.original_name);
-            setShowFileViewer(true);
-          }, 500);
+            setShowDownloadOverlay(false);
+          }, 1500);
         } else {
           throw new Error('Downloaded file is corrupted or empty.');
         }
@@ -471,13 +496,196 @@ export default function AssessmentDetailsScreen() {
         throw new Error('Download failed - no result URI.');
       }
     } catch (error: any) {
-      console.error('Error downloading assessment file from list:', error);
-      Alert.alert('Download Failed', error?.message || 'Failed to download file. Please try again.');
+      console.error('Error downloading file to app:', error);
+      setDownloadStatus('error');
+      setTimeout(() => {
+        setShowDownloadOverlay(false);
+        Alert.alert('Download Failed', error?.message || 'Failed to download file. Please try again.');
+      }, 2000);
     } finally {
       setIsDownloading(false);
       setDownloadProgress(0);
       setCurrentDownloadingFileIndex(null);
     }
+  };
+
+  // Download file to device Downloads folder (from files list)
+  const downloadFileToDevice = async (file: AssessmentFile, fileIndex: number) => {
+    setShowFileActionSheet(false);
+    setCurrentDownloadingFileIndex(fileIndex);
+    setIsDownloading(true);
+    setDownloadProgress(0);
+    setDownloadedBytes(0);
+    setTotalBytes(0);
+    setDownloadStatus('downloading');
+    setShowDownloadOverlay(true);
+
+    try {
+      if (Platform.OS === 'android') {
+        const { status } = await MediaLibrary.requestPermissionsAsync();
+        if (status !== 'granted') {
+          setShowDownloadOverlay(false);
+          setIsDownloading(false);
+          Alert.alert('Permission Required', 'Storage permission is needed to save files to your device.');
+          return;
+        }
+      }
+
+      const downloadUrl = `${api.defaults.baseURL}/assessments/${assessmentDetail?.id}/file/${fileIndex}`;
+      const fileExtension = file.extension;
+      const sanitizedName = file.original_name.replace(/[^a-zA-Z0-9.]/g, '_');
+      const fileName = `${sanitizedName}_${assessmentDetail?.id}_${fileIndex}${fileExtension ? `.${fileExtension}` : ''}`;
+      const tempUri = FileSystem.cacheDirectory + fileName;
+
+      console.log('Downloading file to device:', downloadUrl);
+
+      const downloadResumable = FileSystem.createDownloadResumable(
+        downloadUrl,
+        tempUri,
+        {},
+        ({ totalBytesWritten, totalBytesExpectedToWrite }) => {
+          if (totalBytesExpectedToWrite > 0) {
+            const progress = totalBytesWritten / totalBytesExpectedToWrite;
+            setDownloadProgress(Math.round(progress * 100));
+            setDownloadedBytes(totalBytesWritten);
+            setTotalBytes(totalBytesExpectedToWrite);
+          }
+        }
+      );
+
+      const result = await downloadResumable.downloadAsync();
+      if (!result || result.status !== 200) {
+        throw new Error('Download failed, server returned status ' + result?.status);
+      }
+
+      setDownloadStatus('processing');
+      const asset = await MediaLibrary.createAssetAsync(result.uri);
+      await FileSystem.deleteAsync(tempUri, { idempotent: true });
+
+      setDownloadStatus('complete');
+      console.log('File saved to device:', asset.uri);
+      
+      setTimeout(() => {
+        setShowDownloadOverlay(false);
+        Alert.alert(
+          'Download Complete', 
+          `"${file.original_name}" has been saved to your device's Downloads folder.`
+        );
+      }, 1500);
+
+    } catch (error: any) {
+      console.error('Error downloading file to device:', error);
+      setDownloadStatus('error');
+      setTimeout(() => {
+        setShowDownloadOverlay(false);
+        Alert.alert('Download Failed', error?.message || 'Failed to save file. Please try again.');
+      }, 2000);
+    } finally {
+      setIsDownloading(false);
+      setDownloadProgress(0);
+      setCurrentDownloadingFileIndex(null);
+    }
+  };
+
+  // Delete a downloaded file
+  const handleDeleteDownloadedFile = (fileIndex: number) => {
+    const downloadedFile = downloadedFiles.find(d => d.assessmentFileIndex === fileIndex);
+    if (!downloadedFile) return;
+
+    Alert.alert(
+      'Remove Download',
+      `Are you sure you want to delete "${downloadedFile.fileName}" from your device?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await FileSystem.deleteAsync(downloadedFile.uri, { idempotent: true });
+              setDownloadedFiles(prev => prev.filter(d => d.assessmentFileIndex !== fileIndex));
+              Alert.alert('Deleted', 'The file has been removed from your device.');
+            } catch (error) {
+              Alert.alert('Error', 'Could not delete the file. Please try again.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // Download all files to app storage
+  const handleDownloadAllFiles = async () => {
+    if (!assessmentDetail?.files || assessmentDetail.files.length === 0) return;
+    if (!netInfo?.isInternetReachable) {
+      Alert.alert('Offline Mode', 'File downloading requires an internet connection.');
+      return;
+    }
+
+    const notDownloadedFiles = assessmentDetail.files.filter(
+      (_, index) => !downloadedFiles.some(d => d.assessmentFileIndex === index)
+    );
+
+    if (notDownloadedFiles.length === 0) {
+      Alert.alert('All Downloaded', 'All files are already downloaded to your device.');
+      return;
+    }
+
+    Alert.alert(
+      'Download All Files',
+      `Download ${notDownloadedFiles.length} file(s) to your device?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Download All',
+          onPress: async () => {
+            // Download files sequentially
+            const files = assessmentDetail.files || [];
+            for (let i = 0; i < files.length; i++) {
+              const file = files[i];
+              const isAlreadyDownloaded = downloadedFiles.some(d => d.assessmentFileIndex === i);
+              
+              if (!isAlreadyDownloaded) {
+                await downloadFileToApp(file, i);
+              }
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // Delete all downloaded files
+  const handleDeleteAllFiles = () => {
+    if (downloadedFiles.length === 0) return;
+
+    Alert.alert(
+      'Delete All Downloads',
+      `Are you sure you want to delete all ${downloadedFiles.length} downloaded file(s)?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete All',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              for (const file of downloadedFiles) {
+                await FileSystem.deleteAsync(file.uri, { idempotent: true });
+              }
+              setDownloadedFiles([]);
+              Alert.alert('Deleted', 'All downloaded files have been removed.');
+            } catch (error) {
+              Alert.alert('Error', 'Could not delete some files. Please try again.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // Legacy function - kept for backward compatibility
+  const handleOpenFileFromList = async (file: AssessmentFile, fileIndex: number) => {
+    handleFileCardPress(file, fileIndex);
   };
 
   const promptDownloadOptions = () => {
@@ -1759,14 +1967,25 @@ export default function AssessmentDetailsScreen() {
                 <Ionicons name="documents" size={18} color="#4285f4" />
                 <Text style={styles.sectionHeaderText}>Assessment Files ({assessmentDetail.files.length})</Text>
               </View>
-              {downloadedFiles.length > 0 && (
-                <View style={styles.downloadedBadge}>
-                  <Ionicons name="checkmark-circle" size={14} color="#16a34a" />
-                  <Text style={styles.downloadedBadgeText}>
-                    {downloadedFiles.length} downloaded
-                  </Text>
-                </View>
-              )}
+              <View style={styles.filesSectionActions}>
+                {downloadedFiles.length > 0 && (
+                  <View style={styles.downloadedBadge}>
+                    <Ionicons name="checkmark-circle" size={14} color="#16a34a" />
+                    <Text style={styles.downloadedBadgeText}>
+                      {downloadedFiles.length} downloaded
+                    </Text>
+                  </View>
+                )}
+                {downloadedFiles.length < assessmentDetail.files.length && netInfo?.isInternetReachable && (
+                  <TouchableOpacity 
+                    style={styles.downloadAllButton}
+                    onPress={handleDownloadAllFiles}
+                  >
+                    <Ionicons name="cloud-download-outline" size={16} color="#4285f4" />
+                    <Text style={styles.downloadAllButtonText}>Download All</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
             </View>
             <View style={styles.filesListContainer}>
               {assessmentDetail.files.map((file, index) => {
@@ -1774,28 +1993,12 @@ export default function AssessmentDetailsScreen() {
                 const isCurrentlyDownloading = currentDownloadingFileIndex === index;
                 
                 return (
-                  <TouchableOpacity
+                  <View
                     key={index}
                     style={[
                       styles.assessmentFileCard,
                       isDownloaded && styles.assessmentFileCardDownloaded,
                     ]}
-                    onPress={() => {
-                      if (isDownloaded) {
-                        // Open in FileViewer
-                        const downloadedFile = downloadedFiles.find(d => d.assessmentFileIndex === index);
-                        if (downloadedFile) {
-                          setActiveFileViewerUri(downloadedFile.uri);
-                          setActiveFileViewerName(downloadedFile.fileName);
-                          setShowFileViewer(true);
-                        }
-                      } else if (netInfo?.isInternetReachable && assessmentDetail.id) {
-                        handleOpenFileFromList(file, index);
-                      } else {
-                        Alert.alert('Offline', 'You need to be online to download this file.');
-                      }
-                    }}
-                    disabled={isCurrentlyDownloading}
                   >
                     <View style={[
                       styles.assessmentFileIconContainer, 
@@ -1821,21 +2024,78 @@ export default function AssessmentDetailsScreen() {
                         )}
                       </View>
                     </View>
+                    {/* Action Button */}
                     {isCurrentlyDownloading ? (
-                      <ActivityIndicator size="small" color="#4285f4" />
+                      <ActivityIndicator size="small" color="#4285f4" style={styles.fileActionButton} />
                     ) : isDownloaded ? (
-                      <Ionicons name="eye-outline" size={22} color="#16a34a" />
+                      <TouchableOpacity 
+                        style={styles.fileActionButton}
+                        onPress={() => {
+                          const downloadedFile = downloadedFiles.find(d => d.assessmentFileIndex === index);
+                          if (downloadedFile) {
+                            setActiveFileViewerUri(downloadedFile.uri);
+                            setActiveFileViewerName(downloadedFile.fileName);
+                            setShowFileViewer(true);
+                          }
+                        }}
+                      >
+                        <Ionicons name="eye-outline" size={22} color="#16a34a" />
+                      </TouchableOpacity>
                     ) : (
-                      <Ionicons 
-                        name="download-outline" 
-                        size={20} 
-                        color={netInfo?.isInternetReachable ? '#4285f4' : '#9ca3af'} 
-                      />
+                      <TouchableOpacity 
+                        style={styles.fileActionButton}
+                        onPress={() => handleFileCardPress(file, index)}
+                        disabled={!netInfo?.isInternetReachable}
+                      >
+                        <Ionicons 
+                          name="download-outline" 
+                          size={22} 
+                          color={netInfo?.isInternetReachable ? '#4285f4' : '#9ca3af'} 
+                        />
+                      </TouchableOpacity>
                     )}
-                  </TouchableOpacity>
+                  </View>
                 );
               })}
             </View>
+          </View>
+        )}
+
+        {/* Downloaded Files Carousel Section */}
+        {downloadedFiles.length > 0 && (
+          <View style={styles.sectionContainer}>
+            <Text style={styles.sectionHeader}>
+              <Ionicons name="download" size={18} color="#16a34a" /> Downloaded Files ({downloadedFiles.length})
+            </Text>
+            <DownloadedFilesCarousel
+              files={downloadedFiles.map((df, idx) => ({
+                id: `${df.assessmentFileIndex}-${idx}`,
+                uri: df.uri,
+                fileName: df.fileName,
+                fileSize: df.fileSize,
+                fileType: df.fileType as any,
+                downloadDate: df.downloadDate,
+                originalIndex: df.assessmentFileIndex,
+              }))}
+              onViewFile={(file) => {
+                setActiveFileViewerUri(file.uri);
+                setActiveFileViewerName(file.fileName);
+                setShowFileViewer(true);
+              }}
+              onShareFile={async (file) => {
+                if (await Sharing.isAvailableAsync()) {
+                  await Sharing.shareAsync(file.uri);
+                }
+              }}
+              onDeleteFile={(file) => {
+                if (file.originalIndex !== undefined) {
+                  handleDeleteDownloadedFile(file.originalIndex);
+                }
+              }}
+              onDeleteAll={handleDeleteAllFiles}
+              totalFiles={assessmentDetail?.files?.length || downloadedFiles.length}
+              isOnline={netInfo?.isInternetReachable || false}
+            />
           </View>
         )}
 
@@ -2433,6 +2693,57 @@ export default function AssessmentDetailsScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* File Action Sheet for Assessment Files */}
+      <FileActionSheet
+        visible={showFileActionSheet}
+        onClose={() => {
+          setShowFileActionSheet(false);
+          setSelectedFileForAction(null);
+        }}
+        fileName={selectedFileForAction?.file.original_name}
+        fileSize={selectedFileForAction?.file.size ? formatBytes(selectedFileForAction.file.size) : undefined}
+        fileType={detectFileType(selectedFileForAction?.file.original_name || '') || 'file'}
+        isCached={false}
+        actions={[
+          {
+            icon: 'phone-portrait-outline',
+            label: 'Save to App',
+            subtitle: 'Access offline within the app',
+            onPress: () => {
+              if (selectedFileForAction) {
+                downloadFileToApp(selectedFileForAction.file, selectedFileForAction.index);
+              }
+            },
+            color: '#4285f4',
+          },
+          {
+            icon: 'folder-outline',
+            label: 'Save to Device',
+            subtitle: 'Save to Downloads folder',
+            onPress: () => {
+              if (selectedFileForAction) {
+                downloadFileToDevice(selectedFileForAction.file, selectedFileForAction.index);
+              }
+            },
+            color: '#16a34a',
+          },
+        ]}
+      />
+
+      {/* Download Progress Overlay */}
+      <DownloadProgressOverlay
+        visible={showDownloadOverlay}
+        progress={downloadProgress / 100}
+        fileName={selectedFileForAction?.file.original_name || 'File'}
+        fileSize={totalBytes > 0 ? formatBytes(totalBytes) : undefined}
+        downloadedSize={downloadedBytes > 0 ? formatBytes(downloadedBytes) : undefined}
+        status={downloadStatus}
+        onCancel={() => {
+          setShowDownloadOverlay(false);
+          setIsDownloading(false);
+        }}
+      />
 
       {/* In-App FileViewer Modal */}
       <Modal
@@ -3145,6 +3456,27 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: '#16a34a',
   },
+  filesSectionActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  downloadAllButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#e0edff',
+    paddingHorizontal: isTablet ? 12 : 10,
+    paddingVertical: isTablet ? 7 : 6,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#4285f4',
+  },
+  downloadAllButtonText: {
+    fontSize: isTablet ? 13 : 12,
+    fontWeight: '600',
+    color: '#4285f4',
+  },
   fileItemMetaRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -3163,6 +3495,14 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '500',
     color: '#16a34a',
+  },
+  fileActionButton: {
+    width: 40,
+    height: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: 20,
+    backgroundColor: 'rgba(66, 133, 244, 0.1)',
   },
   // FileViewer Modal Styles
   fileViewerContainer: {
