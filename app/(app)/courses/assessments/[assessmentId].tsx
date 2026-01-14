@@ -4,7 +4,6 @@ import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as IntentLauncher from 'expo-intent-launcher';
-import * as MediaLibrary from 'expo-media-library';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import * as Sharing from 'expo-sharing';
 import React, { useCallback, useState } from 'react';
@@ -28,7 +27,6 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import FileViewer, { detectFileType } from '../../../../components/FileViewer';
 import { SubmittedFileCard } from '../../../../components/ui';
 import DownloadProgressOverlay from '../../../../components/ui/DownloadProgressOverlay';
-import DownloadedFilesCarousel from '../../../../components/ui/DownloadedFilesCarousel';
 import FileActionSheet from '../../../../components/ui/FileActionSheet';
 
 // Responsive design helper
@@ -222,6 +220,20 @@ const getMimeType = (filePath: string): string => {
   return mimeMap[extension || ''] || 'application/octet-stream';
 };
 
+const getFileExtension = (nameOrPath: string): string => {
+  const base = (nameOrPath || '').split('?')[0].split('#')[0];
+  const ext = base.split('.').pop()?.toLowerCase();
+  if (!ext || ext === base.toLowerCase()) return '';
+  return ext;
+};
+
+const isOfficeExtension = (extension?: string): boolean => {
+  const ext = (extension || '').toLowerCase();
+  return ['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx'].includes(ext);
+};
+
+const isOfficeFileName = (nameOrPath: string): boolean => isOfficeExtension(getFileExtension(nameOrPath));
+
 const getFileType = (filePath: string) => {
   if (!filePath) return 'other';
   const extension = filePath.split('.').pop()?.toLowerCase();
@@ -366,7 +378,11 @@ export default function AssessmentDetailsScreen() {
   const [currentDownloadingFileIndex, setCurrentDownloadingFileIndex] = useState<number | null>(null);
 
   // State for file action sheet (when user taps download icon on a file)
-  const [selectedFileForAction, setSelectedFileForAction] = useState<{file: AssessmentFile, index: number} | null>(null);
+  const [selectedFileForAction, setSelectedFileForAction] = useState<{
+    file: AssessmentFile;
+    index: number;
+    downloaded?: DownloadedFileInfo | null;
+  } | null>(null);
   const [showFileActionSheet, setShowFileActionSheet] = useState(false);
 
   // Action sheet for the single "Assignment Instructions" file
@@ -417,7 +433,12 @@ export default function AssessmentDetailsScreen() {
     // Check if file is already downloaded
     const existingDownload = downloadedFiles.find(d => d.assessmentFileIndex === fileIndex);
     if (existingDownload) {
-      // Open in FileViewer directly
+      // Office formats: open externally (no in-app placeholder)
+      if (isOfficeExtension(file.extension) || isOfficeFileName(existingDownload.fileName)) {
+        openLocalFileInAnotherApp(existingDownload.uri);
+        return;
+      }
+
       setActiveFileViewerUri(existingDownload.uri);
       setActiveFileViewerName(existingDownload.fileName);
       setShowFileViewer(true);
@@ -431,8 +452,59 @@ export default function AssessmentDetailsScreen() {
     }
     
     // Set selected file and show action sheet
-    setSelectedFileForAction({ file, index: fileIndex });
+    setSelectedFileForAction({ file, index: fileIndex, downloaded: null });
     setShowFileActionSheet(true);
+  };
+
+  const openFileActions = (file: AssessmentFile, fileIndex: number) => {
+    const existingDownload = downloadedFiles.find(d => d.assessmentFileIndex === fileIndex) || null;
+    setSelectedFileForAction({ file, index: fileIndex, downloaded: existingDownload });
+    setShowFileActionSheet(true);
+  };
+
+  const openLocalFileInAnotherApp = async (localUri: string) => {
+    if (!localUri) return;
+
+    if (Platform.OS === 'android') {
+      try {
+        const contentUri = await FileSystem.getContentUriAsync(localUri);
+        const mimeType = getMimeType(localUri);
+        await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
+          data: contentUri,
+          flags: 1,
+          type: mimeType,
+        });
+      } catch (e) {
+        Alert.alert('Error', 'No app found to open this file.');
+      }
+      return;
+    }
+
+    if (await Sharing.isAvailableAsync()) {
+      await Sharing.shareAsync(localUri);
+    }
+  };
+
+  const exportLocalFileToDevice = async (localUri: string, suggestedFileName: string) => {
+    if (!localUri) return;
+    try {
+      if (Platform.OS === 'android') {
+        await saveFileToDeviceAndroid(localUri, suggestedFileName, getMimeType(suggestedFileName));
+        Alert.alert('Saved', 'File saved to your selected folder.');
+        return;
+      }
+
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(localUri, {
+          dialogTitle: 'Save file',
+          mimeType: getMimeType(suggestedFileName),
+        });
+      } else {
+        Alert.alert('Error', 'Sharing is not available on this device.');
+      }
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'Failed to save file.');
+    }
   };
 
   // Download file to app storage (from files list)
@@ -513,6 +585,22 @@ export default function AssessmentDetailsScreen() {
     }
   };
 
+    const saveFileToDeviceAndroid = async (sourceFileUri: string, targetFileName: string, mimeType: string) => {
+      const permissions = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+      if (!permissions.granted) {
+        throw new Error('Save cancelled.');
+      }
+
+      const directoryUri = permissions.directoryUri;
+      const destUri = await FileSystem.StorageAccessFramework.createFileAsync(directoryUri, targetFileName, mimeType);
+      const base64 = await FileSystem.readAsStringAsync(sourceFileUri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      await FileSystem.StorageAccessFramework.writeAsStringAsync(destUri, base64, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+    };
+
   // Download file to device Downloads folder (from files list)
   const downloadFileToDevice = async (file: AssessmentFile, fileIndex: number) => {
     setShowFileActionSheet(false);
@@ -525,16 +613,6 @@ export default function AssessmentDetailsScreen() {
     setShowDownloadOverlay(true);
 
     try {
-      if (Platform.OS === 'android') {
-        const { status } = await MediaLibrary.requestPermissionsAsync();
-        if (status !== 'granted') {
-          setShowDownloadOverlay(false);
-          setIsDownloading(false);
-          Alert.alert('Permission Required', 'Storage permission is needed to save files to your device.');
-          return;
-        }
-      }
-
       const downloadUrl = `${api.defaults.baseURL}/assessments/${assessmentDetail?.id}/file/${fileIndex}`;
       const fileExtension = file.extension;
       const sanitizedName = file.original_name.replace(/[^a-zA-Z0-9.]/g, '_');
@@ -563,17 +641,31 @@ export default function AssessmentDetailsScreen() {
       }
 
       setDownloadStatus('processing');
-      const asset = await MediaLibrary.createAssetAsync(result.uri);
+      if (Platform.OS === 'android') {
+        await saveFileToDeviceAndroid(result.uri, fileName, getMimeType(fileName));
+      } else {
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(result.uri, {
+            dialogTitle: 'Save file',
+            mimeType: getMimeType(fileName),
+          });
+        } else {
+          throw new Error('Sharing is not available on this device.');
+        }
+      }
+
       await FileSystem.deleteAsync(tempUri, { idempotent: true });
 
       setDownloadStatus('complete');
-      console.log('File saved to device:', asset.uri);
+      console.log('File saved to device:', fileName);
       
       setTimeout(() => {
         setShowDownloadOverlay(false);
         Alert.alert(
           'Download Complete', 
-          `"${file.original_name}" has been saved to your device's Downloads folder.`
+          Platform.OS === 'android'
+            ? `"${file.original_name}" has been saved to your selected folder.`
+            : `"${file.original_name}" has been exported using the share sheet.`
         );
       }, 1500);
 
@@ -786,16 +878,6 @@ export default function AssessmentDetailsScreen() {
     const fileName = `Assessment_${sanitizedTitle}_${assessmentDetail.id}.${fileExtension}`;
     
     try {
-      // Request storage permission (for Android)
-      if (Platform.OS === 'android') {
-        const { status } = await MediaLibrary.requestPermissionsAsync();
-        if (status !== 'granted') {
-          setIsDownloading(false);
-          Alert.alert('Permission Required', 'Storage permission is needed to save files to your device.');
-          return;
-        }
-      }
-
       // Download to cache first
       const tempUri = FileSystem.cacheDirectory + fileName;
       console.log('Downloading to temp file:', tempUri);
@@ -819,16 +901,28 @@ export default function AssessmentDetailsScreen() {
 
       console.log('Temp download complete:', result.uri);
 
-      // Save to device's Downloads folder using MediaLibrary
-      const asset = await MediaLibrary.createAssetAsync(result.uri);
+      if (Platform.OS === 'android') {
+        await saveFileToDeviceAndroid(result.uri, fileName, getMimeType(fileName));
+      } else {
+        if (await Sharing.isAvailableAsync()) {
+          await Sharing.shareAsync(result.uri, {
+            dialogTitle: 'Save file',
+            mimeType: getMimeType(fileName),
+          });
+        } else {
+          throw new Error('Sharing is not available on this device.');
+        }
+      }
       
       // Clean up the temp file
       await FileSystem.deleteAsync(tempUri, { idempotent: true });
 
-      console.log('File saved to device:', asset.uri);
+      console.log('File saved to device:', fileName);
       Alert.alert(
         'Download Complete', 
-        `"${assessmentDetail.title}" has been saved to your device's Downloads folder.`
+        Platform.OS === 'android'
+          ? `"${assessmentDetail.title}" has been saved to your selected folder.`
+          : `"${assessmentDetail.title}" has been exported using the share sheet.`
       );
 
     } catch (err: any) {
@@ -867,6 +961,12 @@ export default function AssessmentDetailsScreen() {
 
   const openInstructionsInApp = () => {
     if (!downloadedFileUri) return;
+
+    if (isOfficeFileName(assessmentDetail?.assessment_file_path || '')) {
+      handleOpenFile();
+      return;
+    }
+
     setActiveFileViewerUri(downloadedFileUri);
     setActiveFileViewerName('Instructions File');
     setShowFileViewer(true);
@@ -1919,70 +2019,117 @@ export default function AssessmentDetailsScreen() {
         {isAssignmentType && assessmentDetail.assessment_file_url && (
           <View style={styles.sectionContainer}>
             <Text style={styles.sectionHeader}>Assignment Instructions</Text>
-            
-            {!downloadedFileUri ? (
-              // NOT DOWNLOADED STATE (Show Download Action Card)
-              <TouchableOpacity
-                onPress={promptDownloadOptions}
-                style={[styles.actionCard, !netInfo?.isInternetReachable && styles.actionCardDisabled]}
-                disabled={!netInfo?.isInternetReachable || isDownloading}
-              >
-                <View style={styles.actionCardContent}>
-                  <View style={styles.actionCardIcon}>
-                    {isDownloading ? (
-                      <ActivityIndicator color="#fff" />
+
+            {(() => {
+              const instructionsPath = assessmentDetail.assessment_file_path || '';
+              const instructionsDisplayName = instructionsPath.split('/').pop() || 'Instructions File';
+              const ext = instructionsDisplayName.split('.').pop()?.toLowerCase() || '';
+              const isDownloaded = !!downloadedFileUri;
+              const canDownload = !!netInfo?.isInternetReachable && !isDownloading;
+
+              return (
+                <View>
+                  <TouchableOpacity
+                    style={[
+                      styles.assessmentFileCard,
+                      isDownloaded && styles.assessmentFileCardDownloaded,
+                      { marginTop: 6 }
+                    ]}
+                    activeOpacity={0.9}
+                    onPress={() => {
+                      if (isDownloaded) {
+                        openInstructionsInApp();
+                        return;
+                      }
+                      if (canDownload) {
+                        promptDownloadOptions();
+                      }
+                    }}
+                    disabled={!isDownloaded && !canDownload}
+                  >
+                    <View
+                      style={[
+                        styles.assessmentFileIconContainer,
+                        { backgroundColor: (isDownloaded ? '#dcfce720' : getFileColorByExtension(ext) + '20') }
+                      ]}
+                    >
+                      <Ionicons
+                        name={getFileIconByExtension(ext) as any}
+                        size={28}
+                        color={isDownloaded ? '#16a34a' : getFileColorByExtension(ext)}
+                      />
+                    </View>
+                    <View style={styles.assessmentFileInfoContainer}>
+                      <Text style={styles.assessmentFileNameText} numberOfLines={2}>
+                        {instructionsDisplayName}
+                      </Text>
+                      <View style={styles.fileItemMetaRow}>
+                        <Text style={styles.assessmentFileSizeText}>
+                          {isDownloaded ? `${fileSize || 'Downloaded'} • ${ext ? ext.toUpperCase() : 'FILE'}` : `Posted by instructor • ${ext ? ext.toUpperCase() : 'FILE'}`}
+                        </Text>
+                        {isDownloaded ? (
+                          <View style={styles.offlineAvailableBadge}>
+                            <Ionicons name="cloud-done" size={12} color="#16a34a" />
+                            <Text style={styles.offlineAvailableText}>Offline</Text>
+                          </View>
+                        ) : !netInfo?.isInternetReachable ? (
+                          <View style={styles.offlineAvailableBadge}>
+                            <Ionicons name="cloud-offline" size={12} color="#9ca3af" />
+                            <Text style={[styles.offlineAvailableText, { color: '#9ca3af' }]}>Offline</Text>
+                          </View>
+                        ) : null}
+                      </View>
+                    </View>
+
+                    {isDownloaded ? (
+                      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                        <TouchableOpacity
+                          style={styles.fileActionButton}
+                          onPress={openInstructionsInApp}
+                        >
+                          <Ionicons
+                            name={(isOfficeExtension(ext) || isOfficeFileName(instructionsDisplayName)) ? 'open-outline' : 'eye-outline'}
+                            size={22}
+                            color="#16a34a"
+                          />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.fileActionButton}
+                          onPress={() => setShowInstructionsActionSheet(true)}
+                        >
+                          <Ionicons name="ellipsis-horizontal" size={22} color="#4285f4" />
+                        </TouchableOpacity>
+                      </View>
                     ) : (
-                      <Ionicons name="download" size={24} color={netInfo?.isInternetReachable ? '#fff' : '#ccc'} />
+                      <TouchableOpacity
+                        style={styles.fileActionButton}
+                        onPress={promptDownloadOptions}
+                        disabled={!canDownload}
+                      >
+                        {isDownloading ? (
+                          <ActivityIndicator size="small" color="#4285f4" />
+                        ) : (
+                          <Ionicons
+                            name="download-outline"
+                            size={22}
+                            color={canDownload ? '#4285f4' : '#9ca3af'}
+                          />
+                        )}
+                      </TouchableOpacity>
                     )}
-                  </View>
-                  <View style={styles.actionCardText}>
-                    <Text style={[styles.actionCardTitle, !netInfo?.isInternetReachable && styles.disabledText]}>
-                      {isDownloading ? `Downloading ${downloadProgress}%` : 'Download Instructions'}
-                    </Text>
-                    <Text style={[styles.actionCardSubtitle, !netInfo?.isInternetReachable && styles.disabledText]}>
-                      {isDownloading ? 'Please wait...' : 'Get the assignment file'}
-                    </Text>
-                  </View>
-                </View>
-                {!netInfo?.isInternetReachable && <Text style={styles.offlineWarning}>Must be online to download</Text>}
-              </TouchableOpacity>
-            ) : (
-              // DOWNLOADED STATE (Offline-first: open inside the app by default)
-              <View style={styles.inlineViewerContainer}>
-                <View style={styles.viewerHeader}>
-                  <Text style={styles.viewerTitle}>File Downloaded</Text>
-                  <View style={styles.viewerActions}>
-                    <TouchableOpacity
-                      style={styles.actionButton}
-                      onPress={() => setShowInstructionsActionSheet(true)}
-                    >
-                      <Ionicons name="ellipsis-horizontal" size={20} color="#4285f4" />
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.actionButton}
-                      onPress={handleDeleteDownload}
-                      disabled={isDeleting}
-                    >
-                      {isDeleting ? <ActivityIndicator size="small" color="#d93025" /> : <Ionicons name="trash-outline" size={20} color="#d93025" />}
-                    </TouchableOpacity>
-                  </View>
-                </View>
-                <View style={styles.genericFileContainer}>
-                  <Ionicons name={getFileIcon(getFileType(assessmentDetail.assessment_file_path || ''))} size={64} color="#4285f4" />
-                  <Text style={styles.genericFileName}>Instructions File</Text>
-                  <TouchableOpacity style={styles.openFileButton} onPress={openInstructionsInApp}>
-                    <Text style={styles.openFileButtonText}>View in App</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity style={[styles.openFileButton, { marginTop: 10, backgroundColor: '#5f6368' }]} onPress={handleOpenFile}>
-                    <Text style={styles.openFileButtonText}>Open with External App</Text>
-                  </TouchableOpacity>
+
+                  {isDownloaded && (
+                    <View style={styles.downloadedIndicator}>
+                      <Ionicons name="checkmark-circle" size={16} color="#137333" />
+                      <Text style={styles.downloadedText}>
+                        {`Downloaded on ${downloadDate || 'Recently'} • ${fileSize || ''}`}
+                      </Text>
+                    </View>
+                  )}
                 </View>
-                <View style={styles.downloadedIndicator}>
-                  <Ionicons name="checkmark-circle" size={16} color="#137333" />
-                  <Text style={styles.downloadedText}>{`Downloaded on ${downloadDate} • ${fileSize}`}</Text>
-                </View>
-              </View>
-            )}
+              );
+            })()}
           </View>
         )}
 
@@ -2020,12 +2167,14 @@ export default function AssessmentDetailsScreen() {
                 const isCurrentlyDownloading = currentDownloadingFileIndex === index;
                 
                 return (
-                  <View
+                  <TouchableOpacity
                     key={index}
                     style={[
                       styles.assessmentFileCard,
                       isDownloaded && styles.assessmentFileCardDownloaded,
                     ]}
+                    activeOpacity={0.9}
+                    onPress={() => handleFileCardPress(file, index)}
                   >
                     <View style={[
                       styles.assessmentFileIconContainer, 
@@ -2055,74 +2204,60 @@ export default function AssessmentDetailsScreen() {
                     {isCurrentlyDownloading ? (
                       <ActivityIndicator size="small" color="#4285f4" style={styles.fileActionButton} />
                     ) : isDownloaded ? (
-                      <TouchableOpacity 
-                        style={styles.fileActionButton}
-                        onPress={() => {
-                          const downloadedFile = downloadedFiles.find(d => d.assessmentFileIndex === index);
-                          if (downloadedFile) {
-                            setActiveFileViewerUri(downloadedFile.uri);
-                            setActiveFileViewerName(downloadedFile.fileName);
-                            setShowFileViewer(true);
-                          }
-                        }}
-                      >
-                        <Ionicons name="eye-outline" size={22} color="#16a34a" />
-                      </TouchableOpacity>
+                      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                        <TouchableOpacity
+                          style={styles.fileActionButton}
+                          onPress={() => {
+                            const downloadedFile = downloadedFiles.find(d => d.assessmentFileIndex === index);
+                            if (downloadedFile) {
+                              if (isOfficeExtension(file.extension) || isOfficeFileName(downloadedFile.fileName)) {
+                                openLocalFileInAnotherApp(downloadedFile.uri);
+                                return;
+                              }
+                              setActiveFileViewerUri(downloadedFile.uri);
+                              setActiveFileViewerName(downloadedFile.fileName);
+                              setShowFileViewer(true);
+                            }
+                          }}
+                        >
+                          <Ionicons
+                            name={(isOfficeExtension(file.extension) || isOfficeFileName(file.original_name)) ? 'open-outline' : 'eye-outline'}
+                            size={22}
+                            color="#16a34a"
+                          />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.fileActionButton}
+                          onPress={() => openFileActions(file, index)}
+                        >
+                          <Ionicons name="ellipsis-horizontal" size={22} color="#4285f4" />
+                        </TouchableOpacity>
+                      </View>
                     ) : (
-                      <TouchableOpacity 
-                        style={styles.fileActionButton}
-                        onPress={() => handleFileCardPress(file, index)}
-                        disabled={!netInfo?.isInternetReachable}
-                      >
-                        <Ionicons 
-                          name="download-outline" 
-                          size={22} 
-                          color={netInfo?.isInternetReachable ? '#4285f4' : '#9ca3af'} 
-                        />
-                      </TouchableOpacity>
+                      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                        <TouchableOpacity
+                          style={styles.fileActionButton}
+                          onPress={() => handleFileCardPress(file, index)}
+                          disabled={!netInfo?.isInternetReachable}
+                        >
+                          <Ionicons
+                            name="download-outline"
+                            size={22}
+                            color={netInfo?.isInternetReachable ? '#4285f4' : '#9ca3af'}
+                          />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.fileActionButton}
+                          onPress={() => openFileActions(file, index)}
+                        >
+                          <Ionicons name="ellipsis-horizontal" size={22} color="#4285f4" />
+                        </TouchableOpacity>
+                      </View>
                     )}
-                  </View>
+                  </TouchableOpacity>
                 );
               })}
             </View>
-          </View>
-        )}
-
-        {/* Downloaded Files Carousel Section */}
-        {downloadedFiles.length > 0 && (
-          <View style={styles.sectionContainer}>
-            <Text style={styles.sectionHeader}>
-              <Ionicons name="download" size={18} color="#16a34a" /> Downloaded Files ({downloadedFiles.length})
-            </Text>
-            <DownloadedFilesCarousel
-              files={downloadedFiles.map((df, idx) => ({
-                id: `${df.assessmentFileIndex}-${idx}`,
-                uri: df.uri,
-                fileName: df.fileName,
-                fileSize: df.fileSize,
-                fileType: df.fileType as any,
-                downloadDate: df.downloadDate,
-                originalIndex: df.assessmentFileIndex,
-              }))}
-              onViewFile={(file) => {
-                setActiveFileViewerUri(file.uri);
-                setActiveFileViewerName(file.fileName);
-                setShowFileViewer(true);
-              }}
-              onShareFile={async (file) => {
-                if (await Sharing.isAvailableAsync()) {
-                  await Sharing.shareAsync(file.uri);
-                }
-              }}
-              onDeleteFile={(file) => {
-                if (file.originalIndex !== undefined) {
-                  handleDeleteDownloadedFile(file.originalIndex);
-                }
-              }}
-              onDeleteAll={handleDeleteAllFiles}
-              totalFiles={assessmentDetail?.files?.length || downloadedFiles.length}
-              isOnline={netInfo?.isInternetReachable || false}
-            />
           </View>
         )}
 
@@ -2762,7 +2897,7 @@ export default function AssessmentDetailsScreen() {
         isCached={!!downloadedFileUri}
         actions={[
           ...(downloadedFileUri ? [
-            {
+            ...(!isOfficeFileName(assessmentDetail?.assessment_file_path || '') ? [{
               icon: 'eye-outline' as const,
               label: 'View in App',
               subtitle: 'Open inside the app',
@@ -2771,11 +2906,11 @@ export default function AssessmentDetailsScreen() {
                 openInstructionsInApp();
               },
               color: '#16a34a',
-            },
+            }] : []),
             {
               icon: 'open-outline' as const,
-              label: 'Open with External App',
-              subtitle: 'Choose another app to open',
+              label: 'Open in Another App',
+              subtitle: 'Use Word/Drive/other apps',
               onPress: () => {
                 setShowInstructionsActionSheet(false);
                 handleOpenFile();
@@ -2808,7 +2943,7 @@ export default function AssessmentDetailsScreen() {
           {
             icon: 'folder-outline',
             label: 'Save to Device',
-            subtitle: 'Auto-save to Downloads folder',
+            subtitle: Platform.OS === 'android' ? 'Choose Downloads/Documents folder' : 'Export using share sheet',
             onPress: () => {
               downloadToDeviceExternal();
             },
@@ -2835,32 +2970,106 @@ export default function AssessmentDetailsScreen() {
           setSelectedFileForAction(null);
         }}
         fileName={selectedFileForAction?.file.original_name}
-        fileSize={selectedFileForAction?.file.size ? formatBytes(selectedFileForAction.file.size) : undefined}
+        fileSize={
+          selectedFileForAction?.downloaded?.fileSize != null
+            ? formatBytes(selectedFileForAction.downloaded.fileSize)
+            : (selectedFileForAction?.file.size ? formatBytes(selectedFileForAction.file.size) : undefined)
+        }
         fileType={detectFileType(selectedFileForAction?.file.original_name || '') || 'file'}
-        isCached={false}
+        isCached={!!selectedFileForAction?.downloaded}
         actions={[
-          {
-            icon: 'phone-portrait-outline',
-            label: 'Save to App',
-            subtitle: 'Access offline within the app',
-            onPress: () => {
-              if (selectedFileForAction) {
-                downloadFileToApp(selectedFileForAction.file, selectedFileForAction.index);
-              }
+          ...(selectedFileForAction?.downloaded ? [
+            ...(!isOfficeExtension(selectedFileForAction.file.extension) && !isOfficeFileName(selectedFileForAction.file.original_name)
+              ? [{
+                  icon: 'eye-outline' as const,
+                  label: 'View in App',
+                  subtitle: 'Open inside the app',
+                  onPress: () => {
+                    const df = selectedFileForAction.downloaded;
+                    if (!df) return;
+                    setShowFileActionSheet(false);
+                    setActiveFileViewerUri(df.uri);
+                    setActiveFileViewerName(df.fileName);
+                    setShowFileViewer(true);
+                  },
+                  color: '#16a34a',
+                }]
+              : []),
+            {
+              icon: 'open-outline' as const,
+              label: 'Open in Another App',
+              subtitle: 'Use another app to open',
+              onPress: async () => {
+                const df = selectedFileForAction.downloaded;
+                if (!df) return;
+                setShowFileActionSheet(false);
+                await openLocalFileInAnotherApp(df.uri);
+              },
+              color: '#4285f4',
             },
-            color: '#4285f4',
-          },
-          {
-            icon: 'folder-outline',
-            label: 'Save to Device',
-            subtitle: 'Save to Downloads folder',
-            onPress: () => {
-              if (selectedFileForAction) {
-                downloadFileToDevice(selectedFileForAction.file, selectedFileForAction.index);
-              }
+            {
+              icon: 'share-outline' as const,
+              label: 'Share File',
+              subtitle: 'Share with other apps',
+              onPress: async () => {
+                const df = selectedFileForAction.downloaded;
+                if (!df) return;
+                setShowFileActionSheet(false);
+                if (await Sharing.isAvailableAsync()) {
+                  await Sharing.shareAsync(df.uri);
+                }
+              },
+              color: '#9333ea',
             },
-            color: '#16a34a',
-          },
+            {
+              icon: 'folder-outline' as const,
+              label: 'Save to Device',
+              subtitle: Platform.OS === 'android' ? 'Choose Downloads/Documents folder' : 'Export using share sheet',
+              onPress: async () => {
+                const df = selectedFileForAction.downloaded;
+                if (!df) return;
+                setShowFileActionSheet(false);
+                await exportLocalFileToDevice(df.uri, df.fileName);
+              },
+              color: '#16a34a',
+            },
+            {
+              icon: 'trash-outline' as const,
+              label: 'Remove Download',
+              subtitle: 'Delete from app storage',
+              onPress: () => {
+                const originalIndex = selectedFileForAction.downloaded?.assessmentFileIndex;
+                setShowFileActionSheet(false);
+                if (originalIndex != null) {
+                  handleDeleteDownloadedFile(originalIndex);
+                }
+              },
+              color: '#ef4444',
+            },
+          ] : [
+            {
+              icon: 'phone-portrait-outline' as const,
+              label: 'Save to App',
+              subtitle: 'Access offline within the app',
+              onPress: () => {
+                if (selectedFileForAction) {
+                  downloadFileToApp(selectedFileForAction.file, selectedFileForAction.index);
+                }
+              },
+              color: '#4285f4',
+            },
+            {
+              icon: 'folder-outline' as const,
+              label: 'Save to Device',
+              subtitle: Platform.OS === 'android' ? 'Choose Downloads/Documents folder' : 'Export using share sheet',
+              onPress: () => {
+                if (selectedFileForAction) {
+                  downloadFileToDevice(selectedFileForAction.file, selectedFileForAction.index);
+                }
+              },
+              color: '#16a34a',
+            },
+          ]),
         ]}
       />
 

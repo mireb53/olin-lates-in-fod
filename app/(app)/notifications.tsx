@@ -7,21 +7,27 @@ import * as MediaLibrary from 'expo-media-library';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useRef, useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    Animated,
-    FlatList,
-    RefreshControl,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View
+  ActivityIndicator,
+  Alert,
+  Animated,
+  Dimensions,
+  FlatList,
+  RefreshControl,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View
 } from 'react-native';
 import { GestureHandlerRootView, Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useNetworkStatus } from '../../context/NetworkContext';
 import { API_BASE_URL, getAuthorizationHeader, getUserData } from '../../lib/api';
+
+const { width: screenWidth } = Dimensions.get('window');
+const isTablet = screenWidth >= 768;
+const isLargeTablet = screenWidth >= 1024;
+const contentMaxWidth = isLargeTablet ? 900 : isTablet ? 700 : screenWidth;
 
 interface Notification {
   id: string;
@@ -351,10 +357,19 @@ export default function NotificationsScreen() {
 
   const getNotificationIconColor = (type: string) => {
     switch(type) {
-      case 'material': return '#10b981';
+      case 'material': return '#1967d2';
       case 'assessment': return '#7c3aed';
-      case 'announcement': return '#f59e0b';
-      default: return '#6b7280';
+      case 'announcement': return '#ea4335';
+      default: return '#5f6368';
+    }
+  };
+
+  const getNotificationGradient = (type: string) => {
+    switch(type) {
+      case 'material': return ['#e3f2fd', '#bbdefb'];
+      case 'assessment': return ['#f3e5f5', '#e1bee7'];
+      case 'announcement': return ['#ffebee', '#ffcdd2'];
+      default: return ['#f5f5f5', '#eeeeee'];
     }
   };
 
@@ -401,6 +416,7 @@ export default function NotificationsScreen() {
 
   const renderNotificationItem = ({ item }: { item: Notification }) => {
     const isSelected = selectedNotifications.has(item.id);
+    const iconColor = getNotificationIconColor(item.type);
     
     const notificationContent = (
       <TouchableOpacity
@@ -417,72 +433,77 @@ export default function NotificationsScreen() {
           }
         }}
         onLongPress={() => handleLongPress(item.id)}
-        activeOpacity={0.7}
+        activeOpacity={0.85}
         delayLongPress={500}
       >
         <View style={styles.notificationContent}>
           {/* Selection Checkbox */}
           {selectionMode && (
             <View style={[styles.checkbox, isSelected && styles.checkboxSelected]}>
-              {isSelected && <Ionicons name="checkmark" size={16} color="#ffffff" />}
+              {isSelected && <Ionicons name="checkmark" size={18} color="#ffffff" />}
             </View>
           )}
           
-          {/* Icon */}
-          <View style={[styles.iconContainer, { backgroundColor: `${getNotificationIconColor(item.type)}15` }]}>
-            <Ionicons 
-              name={getNotificationIcon(item.type) as any} 
-              size={24} 
-              color={getNotificationIconColor(item.type)} 
-            />
+          {/* Icon with gradient background */}
+          <View style={[styles.iconContainer, { backgroundColor: `${iconColor}12` }]}>
+            <View style={[styles.iconInner, { backgroundColor: `${iconColor}20` }]}>
+              <Ionicons 
+                name={getNotificationIcon(item.type) as any} 
+                size={28} 
+                color={iconColor} 
+              />
+            </View>
           </View>
 
           {/* Content */}
           <View style={styles.textContainer}>
-            <Text style={[styles.notificationText, !item.read && styles.unreadText]}>
-              {item.description}
-            </Text>
+            <View style={styles.notificationHeader}>
+              <Text style={[styles.notificationText, !item.read && styles.unreadText]}>
+                {item.description}
+              </Text>
+              {!item.read && !selectionMode && <View style={styles.unreadDot} />}
+            </View>
             {item.course && (
               <View style={styles.courseTag}>
-                <Ionicons name="book-outline" size={12} color="#6b7280" />
+                <Ionicons name="book-outline" size={14} color="#5f6368" />
                 <Text style={styles.courseText}>{item.course}</Text>
               </View>
             )}
-            <Text style={styles.dateText}>{formatDate(item.date)}</Text>
+            <View style={styles.metaRow}>
+              <Ionicons name="time-outline" size={12} color="#9aa0a6" />
+              <Text style={styles.dateText}>{formatDate(item.date)}</Text>
+            </View>
           </View>
 
           {/* Actions */}
-          <View style={styles.actionsContainer}>
-            {item.type === 'material' && item.has_file && (
-              <View>
-                {downloadingId === item.id ? (
-                  <View style={styles.progressContainer}>
-                    <ActivityIndicator size="small" color="#007bff" />
-                    <Text style={styles.progressText}>{downloadProgress}%</Text>
-                  </View>
-                ) : (
-                  <TouchableOpacity
-                    style={[
-                      styles.downloadButton,
-                      (!!downloadingId || !netInfo?.isInternetReachable) && styles.downloadButtonDisabled
-                    ]}
-                    onPress={(e) => {
-                      e.stopPropagation();
-                      handleDownloadAttachment(item);
-                    }}
-                    disabled={!!downloadingId || !netInfo?.isInternetReachable}
-                  >
-                    <Ionicons 
-                      name="download-outline" 
-                      size={20} 
-                      color={!!downloadingId || !netInfo?.isInternetReachable ? "#adb5bd" : "#007bff"} 
-                    />
-                  </TouchableOpacity>
-                )}
-              </View>
-            )}
-            {!item.read && !selectionMode && <View style={styles.unreadDot} />}
-          </View>
+          {item.type === 'material' && item.has_file && (
+            <View style={styles.actionsContainer}>
+              {downloadingId === item.id ? (
+                <View style={styles.progressContainer}>
+                  <ActivityIndicator size="small" color="#1967d2" />
+                  <Text style={styles.progressText}>{downloadProgress}%</Text>
+                </View>
+              ) : (
+                <TouchableOpacity
+                  style={[
+                    styles.downloadButton,
+                    (!!downloadingId || !netInfo?.isInternetReachable) && styles.downloadButtonDisabled
+                  ]}
+                  onPress={(e) => {
+                    e.stopPropagation();
+                    handleDownloadAttachment(item);
+                  }}
+                  disabled={!!downloadingId || !netInfo?.isInternetReachable}
+                >
+                  <Ionicons 
+                    name="download-outline" 
+                    size={22} 
+                    color={!!downloadingId || !netInfo?.isInternetReachable ? "#9aa0a6" : "#1967d2"} 
+                  />
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
         </View>
       </TouchableOpacity>
     );
@@ -510,36 +531,55 @@ export default function NotificationsScreen() {
   const renderEmptyState = () => (
     <View style={styles.emptyContainer}>
       <View style={styles.emptyIconContainer}>
-        <Ionicons name="notifications-off-outline" size={64} color="#d1d5db" />
+        <View style={styles.emptyIconInner}>
+          <Ionicons 
+            name={netInfo?.isInternetReachable ? "notifications-off-outline" : "cloud-offline-outline"} 
+            size={80} 
+            color="#9aa0a6" 
+          />
+        </View>
       </View>
-      <Text style={styles.emptyTitle}>No Notifications</Text>
+      <Text style={styles.emptyTitle}>
+        {netInfo?.isInternetReachable ? "All Caught Up!" : "You're Offline"}
+      </Text>
       <Text style={styles.emptyText}>
         {netInfo?.isInternetReachable 
-          ? "You're all caught up! Check back later for updates."
-          : "Connect to the internet to see your notifications."
+          ? "No new notifications. Check back later for updates from your courses."
+          : "Connect to the internet to see your latest notifications and updates."
         }
       </Text>
+      {netInfo?.isInternetReachable && (
+        <TouchableOpacity style={styles.emptyRefreshButton} onPress={onRefresh}>
+          <Ionicons name="refresh" size={18} color="#1967d2" />
+          <Text style={styles.emptyRefreshText}>Refresh</Text>
+        </TouchableOpacity>
+      )}
     </View>
   );
 
   const renderHeader = () => (
     <View style={styles.listHeader}>
-      {unreadCount > 0 && !selectionMode && (
-        <View style={styles.unreadBadge}>
-          <Text style={styles.unreadBadgeText}>{unreadCount} unread</Text>
-        </View>
-      )}
-      {selectionMode && (
-        <View style={styles.selectionInfo}>
-          <Text style={styles.selectionText}>
-            {selectedNotifications.size} selected
-          </Text>
-        </View>
-      )}
+      <View style={styles.listHeaderLeft}>
+        {unreadCount > 0 && !selectionMode && (
+          <View style={styles.unreadBadge}>
+            <View style={styles.unreadDotBadge} />
+            <Text style={styles.unreadBadgeText}>{unreadCount} unread</Text>
+          </View>
+        )}
+        {selectionMode && (
+          <View style={styles.selectionInfo}>
+            <Ionicons name="checkmark-circle" size={16} color="#ea8600" />
+            <Text style={styles.selectionText}>
+              {selectedNotifications.size} selected
+            </Text>
+          </View>
+        )}
+      </View>
       {!selectionMode && (
-        <Text style={styles.swipeHint}>
-          <Ionicons name="arrow-back" size={12} color="#9ca3af" /> Swipe left to delete
-        </Text>
+        <View style={styles.swipeHintContainer}>
+          <Ionicons name="arrow-back" size={14} color="#9aa0a6" />
+          <Text style={styles.swipeHint}>Swipe to delete</Text>
+        </View>
       )}
     </View>
   );
@@ -636,20 +676,28 @@ export default function NotificationsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f3f4f6',
+    backgroundColor: '#f8f9fa',
+    alignItems: isTablet ? 'center' : 'stretch',
   },
   header: {
+    width: '100%',
+    maxWidth: contentMaxWidth,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: isTablet ? 24 : 16,
+    paddingVertical: isTablet ? 16 : 14,
     backgroundColor: '#ffffff',
     borderBottomWidth: 1,
-    borderBottomColor: '#e5e7eb',
+    borderBottomColor: '#e0e0e0',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 2,
   },
   headerLeft: {
-    width: 80,
+    width: isTablet ? 100 : 80,
     alignItems: 'flex-start',
   },
   headerCenter: {
@@ -658,77 +706,82 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   headerRight: {
-    width: 80,
+    width: isTablet ? 140 : 120,
     alignItems: 'flex-end',
   },
   backButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: isTablet ? 44 : 40,
+    height: isTablet ? 44 : 40,
+    borderRadius: isTablet ? 22 : 20,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#f3f4f6',
+    backgroundColor: '#f1f3f4',
   },
   headerTitle: {
-    fontSize: 20,
+    fontSize: isTablet ? 24 : 20,
     fontWeight: '700',
-    color: '#1f2937',
+    color: '#202124',
     textAlign: 'center',
   },
   markAllButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 8,
-    backgroundColor: '#eff6ff',
+    paddingHorizontal: isTablet ? 16 : 12,
+    paddingVertical: isTablet ? 10 : 8,
+    borderRadius: isTablet ? 10 : 8,
+    backgroundColor: '#e8f0fe',
   },
   markAllText: {
-    fontSize: 14,
+    fontSize: isTablet ? 15 : 14,
     fontWeight: '600',
-    color: '#007bff',
+    color: '#1967d2',
   },
   deleteSelectedButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: isTablet ? 44 : 40,
+    height: isTablet ? 44 : 40,
+    borderRadius: isTablet ? 22 : 20,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#fef2f2',
+    backgroundColor: '#fce8e6',
   },
   deleteSelectedButtonDisabled: {
-    backgroundColor: '#f3f4f6',
+    backgroundColor: '#f1f3f4',
   },
   placeholder: {
-    width: 80,
+    width: isTablet ? 140 : 120,
   },
   offlineBanner: {
+    width: '100%',
+    maxWidth: contentMaxWidth,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 10,
-    paddingHorizontal: 16,
+    gap: 10,
+    paddingVertical: isTablet ? 14 : 12,
+    paddingHorizontal: isTablet ? 24 : 16,
     backgroundColor: '#fef3c7',
     borderBottomWidth: 1,
     borderBottomColor: '#fcd34d',
   },
   offlineText: {
-    fontSize: 13,
-    color: '#92400e',
+    fontSize: isTablet ? 15 : 13,
+    color: '#78350f',
     fontWeight: '500',
   },
   loadingContainer: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 12,
+    gap: isTablet ? 16 : 12,
   },
   loadingText: {
-    fontSize: 16,
-    color: '#6b7280',
+    fontSize: isTablet ? 18 : 16,
+    color: '#5f6368',
+    fontWeight: '500',
   },
   listContent: {
-    padding: 16,
-    gap: 12,
+    width: '100%',
+    maxWidth: contentMaxWidth,
+    padding: isTablet ? 24 : 16,
+    gap: isTablet ? 16 : 12,
   },
   emptyListContent: {
     flexGrow: 1,
@@ -737,115 +790,160 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 8,
+    marginBottom: isTablet ? 16 : 12,
+    paddingHorizontal: isTablet ? 4 : 0,
+  },
+  listHeaderLeft: {
+    flex: 1,
   },
   unreadBadge: {
-    backgroundColor: '#dbeafe',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#e8f0fe',
+    paddingHorizontal: isTablet ? 14 : 12,
+    paddingVertical: isTablet ? 8 : 6,
+    borderRadius: isTablet ? 20 : 16,
+    gap: 6,
+    alignSelf: 'flex-start',
+  },
+  unreadDotBadge: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#1967d2',
   },
   unreadBadgeText: {
-    fontSize: 13,
+    fontSize: isTablet ? 15 : 13,
     fontWeight: '600',
-    color: '#1d4ed8',
+    color: '#1967d2',
   },
   selectionInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
     backgroundColor: '#fef3c7',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 16,
+    paddingHorizontal: isTablet ? 14 : 12,
+    paddingVertical: isTablet ? 8 : 6,
+    borderRadius: isTablet ? 20 : 16,
+    gap: 6,
+    alignSelf: 'flex-start',
   },
   selectionText: {
-    fontSize: 13,
+    fontSize: isTablet ? 15 : 13,
     fontWeight: '600',
-    color: '#92400e',
+    color: '#ea8600',
+  },
+  swipeHintContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
   },
   swipeHint: {
-    fontSize: 12,
-    color: '#9ca3af',
+    fontSize: isTablet ? 13 : 12,
+    color: '#9aa0a6',
+    fontWeight: '500',
   },
   notificationCard: {
     backgroundColor: '#ffffff',
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 12,
+    borderRadius: isTablet ? 14 : 12,
+    padding: isTablet ? 20 : 16,
+    marginBottom: isTablet ? 16 : 12,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
+    shadowOpacity: 0.08,
     shadowRadius: 8,
-    elevation: 2,
+    elevation: 3,
     borderWidth: 1,
-    borderColor: '#e5e7eb',
+    borderColor: '#e0e0e0',
   },
   unreadCard: {
-    backgroundColor: '#eff6ff',
-    borderColor: '#bfdbfe',
+    backgroundColor: '#e8f0fe',
+    borderColor: '#aecbfa',
     borderWidth: 1.5,
+    shadowOpacity: 0.12,
   },
   selectedCard: {
-    backgroundColor: '#fef9c3',
+    backgroundColor: '#fff9e6',
     borderColor: '#fbbf24',
-    borderWidth: 1.5,
+    borderWidth: 2,
   },
   notificationContent: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: 14,
+    gap: isTablet ? 16 : 14,
   },
   checkbox: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
+    width: isTablet ? 28 : 24,
+    height: isTablet ? 28 : 24,
+    borderRadius: isTablet ? 14 : 12,
     borderWidth: 2,
-    borderColor: '#d1d5db',
+    borderColor: '#dadce0',
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 4,
+    marginRight: isTablet ? 6 : 4,
   },
   checkboxSelected: {
-    backgroundColor: '#007bff',
-    borderColor: '#007bff',
+    backgroundColor: '#1967d2',
+    borderColor: '#1967d2',
   },
   iconContainer: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: isTablet ? 64 : 56,
+    height: isTablet ? 64 : 56,
+    borderRadius: isTablet ? 32 : 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  iconInner: {
+    width: isTablet ? 52 : 44,
+    height: isTablet ? 52 : 44,
+    borderRadius: isTablet ? 26 : 22,
     alignItems: 'center',
     justifyContent: 'center',
   },
   textContainer: {
     flex: 1,
-    gap: 6,
+    gap: isTablet ? 8 : 6,
+  },
+  notificationHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
   },
   notificationText: {
-    fontSize: 15,
-    color: '#374151',
-    lineHeight: 22,
+    flex: 1,
+    fontSize: isTablet ? 17 : 15,
+    color: '#3c4043',
+    lineHeight: isTablet ? 25 : 22,
+    fontWeight: '400',
   },
   unreadText: {
     fontWeight: '600',
-    color: '#1f2937',
+    color: '#202124',
   },
   courseTag: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    backgroundColor: '#f3f4f6',
-    borderRadius: 6,
+    gap: 6,
+    paddingVertical: isTablet ? 6 : 4,
+    paddingHorizontal: isTablet ? 10 : 8,
+    backgroundColor: '#f1f3f4',
+    borderRadius: isTablet ? 8 : 6,
     alignSelf: 'flex-start',
   },
   courseText: {
-    fontSize: 12,
-    color: '#6b7280',
+    fontSize: isTablet ? 14 : 12,
+    color: '#5f6368',
     fontWeight: '500',
   },
-  dateText: {
-    fontSize: 12,
-    color: '#9ca3af',
+  metaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
     marginTop: 2,
+  },
+  dateText: {
+    fontSize: isTablet ? 13 : 12,
+    color: '#9aa0a6',
+    fontWeight: '400',
   },
   actionsContainer: {
     flexDirection: 'row',
@@ -853,78 +951,107 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   downloadButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#eff6ff',
+    width: isTablet ? 48 : 44,
+    height: isTablet ? 48 : 44,
+    borderRadius: isTablet ? 24 : 22,
+    backgroundColor: '#e8f0fe',
     alignItems: 'center',
     justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#d2e3fc',
   },
   downloadButtonDisabled: {
-    backgroundColor: '#f3f4f6',
+    backgroundColor: '#f1f3f4',
+    borderColor: '#e0e0e0',
   },
   progressContainer: {
-    width: 40,
-    height: 40,
+    width: isTablet ? 48 : 44,
+    height: isTablet ? 48 : 44,
     alignItems: 'center',
     justifyContent: 'center',
     gap: 2,
   },
   progressText: {
-    fontSize: 10,
-    color: '#007bff',
-    fontWeight: '600',
+    fontSize: isTablet ? 11 : 10,
+    color: '#1967d2',
+    fontWeight: '700',
   },
   unreadDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: '#3b82f6',
+    width: isTablet ? 12 : 10,
+    height: isTablet ? 12 : 10,
+    borderRadius: isTablet ? 6 : 5,
+    backgroundColor: '#1967d2',
+    marginTop: 4,
   },
   deleteActionContainer: {
-    width: 80,
-    marginBottom: 12,
+    width: isTablet ? 100 : 80,
+    marginBottom: isTablet ? 16 : 12,
   },
   deleteAction: {
     flex: 1,
-    backgroundColor: '#dc2626',
+    backgroundColor: '#d93025',
     justifyContent: 'center',
     alignItems: 'center',
-    borderTopRightRadius: 16,
-    borderBottomRightRadius: 16,
+    borderTopRightRadius: isTablet ? 14 : 12,
+    borderBottomRightRadius: isTablet ? 14 : 12,
+    gap: 4,
   },
   deleteActionText: {
     color: '#ffffff',
-    fontSize: 12,
+    fontSize: isTablet ? 14 : 12,
     fontWeight: '600',
-    marginTop: 4,
   },
   emptyContainer: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 40,
-    paddingBottom: 60,
+    paddingHorizontal: isTablet ? 60 : 40,
+    paddingBottom: isTablet ? 80 : 60,
   },
   emptyIconContainer: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    backgroundColor: '#f3f4f6',
+    width: isTablet ? 160 : 140,
+    height: isTablet ? 160 : 140,
+    borderRadius: isTablet ? 80 : 70,
+    backgroundColor: '#f1f3f4',
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 24,
+    marginBottom: isTablet ? 32 : 24,
+  },
+  emptyIconInner: {
+    width: isTablet ? 120 : 100,
+    height: isTablet ? 120 : 100,
+    borderRadius: isTablet ? 60 : 50,
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   emptyTitle: {
-    fontSize: 20,
+    fontSize: isTablet ? 26 : 22,
     fontWeight: '700',
-    color: '#1f2937',
-    marginBottom: 8,
+    color: '#202124',
+    marginBottom: isTablet ? 12 : 10,
   },
   emptyText: {
-    fontSize: 15,
-    color: '#6b7280',
+    fontSize: isTablet ? 17 : 15,
+    color: '#5f6368',
     textAlign: 'center',
-    lineHeight: 22,
+    lineHeight: isTablet ? 26 : 22,
+    marginBottom: isTablet ? 32 : 24,
+  },
+  emptyRefreshButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: isTablet ? 24 : 20,
+    paddingVertical: isTablet ? 14 : 12,
+    backgroundColor: '#e8f0fe',
+    borderRadius: isTablet ? 12 : 10,
+    borderWidth: 1,
+    borderColor: '#d2e3fc',
+  },
+  emptyRefreshText: {
+    fontSize: isTablet ? 17 : 15,
+    color: '#1967d2',
+    fontWeight: '600',
   },
 });

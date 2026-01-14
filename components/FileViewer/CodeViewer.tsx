@@ -12,7 +12,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
@@ -100,12 +100,13 @@ export default function CodeViewer({
   const [code, setCode] = useState<string>('');
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string>('');
   const [isDarkTheme, setIsDarkTheme] = useState(true);
   const [showLineNumbers, setShowLineNumbers] = useState(true);
   const [copied, setCopied] = useState(false);
 
   const language = getLanguageFromExtension(fileName);
-  const lines = code.split('\n');
+  const lines = useMemo(() => code.split('\n'), [code]);
 
   useEffect(() => {
     loadCode();
@@ -115,6 +116,9 @@ export default function CodeViewer({
     try {
       setIsLoading(true);
       setHasError(false);
+      setErrorMessage('');
+
+      const MAX_PREVIEW_BYTES = 1024 * 1024; // 1MB
 
       // Try to read from local file first (if cached)
       const isLocalUri =
@@ -124,23 +128,65 @@ export default function CodeViewer({
         (!!FileSystem.cacheDirectory && uri.startsWith(FileSystem.cacheDirectory));
 
       if (isLocalUri) {
-        const content = await FileSystem.readAsStringAsync(uri);
+        const info = await FileSystem.getInfoAsync(uri);
+        if (!info.exists) {
+          throw new Error('File not found.');
+        }
+        if ('size' in info && typeof info.size === 'number' && info.size > MAX_PREVIEW_BYTES) {
+          throw new Error('This file is too large to preview in the app.');
+        }
+
+        const content = await FileSystem.readAsStringAsync(uri, {
+          encoding: FileSystem.EncodingType.UTF8,
+        });
         setCode(content);
         setIsLoading(false);
         return;
       }
 
+      // For most LMS files, online URLs are protected and require auth headers.
+      // If a download handler is provided, prefer download-first instead of hanging fetch.
+      const isRemoteHttp = uri.startsWith('http://') || uri.startsWith('https://');
+      if (isRemoteHttp && onDownload) {
+        throw new Error('This file needs to be downloaded first to preview it.');
+      }
+
       // Otherwise, fetch from URL
-      const response = await fetch(uri);
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 12000);
+
+      let response: Response;
+      try {
+        response = await fetch(uri, { signal: controller.signal });
+      } finally {
+        clearTimeout(timeout);
+      }
       if (!response.ok) {
         throw new Error('Failed to fetch code');
       }
+
+      const contentType = response.headers.get('content-type') || '';
+      const isProbablyText =
+        contentType.startsWith('text/') ||
+        contentType.includes('json') ||
+        contentType.includes('xml') ||
+        contentType.includes('yaml') ||
+        contentType.includes('sql');
+      if (!isProbablyText) {
+        throw new Error('This file cannot be previewed as text.');
+      }
+
       const content = await response.text();
       setCode(content);
       setIsLoading(false);
     } catch (error) {
       console.error('Error loading code:', error);
       setHasError(true);
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'The file could not be displayed';
+      setErrorMessage(message);
       setIsLoading(false);
     }
   };
@@ -216,9 +262,11 @@ export default function CodeViewer({
           <Ionicons name="code-slash" size={48} color="#9ca3af" />
           <Text style={styles.errorTitle}>Unable to load file</Text>
           <Text style={styles.errorText}>
-            {!isOnline && !isCached 
-              ? 'Download this file for offline viewing'
-              : 'The file could not be displayed'}
+            {errorMessage
+              ? errorMessage
+              : (!isOnline && !isCached
+                ? 'Download this file for offline viewing'
+                : 'The file could not be displayed')}
           </Text>
           <View style={styles.errorActions}>
             <TouchableOpacity style={styles.retryButton} onPress={loadCode}>
