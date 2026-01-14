@@ -9,18 +9,18 @@ import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import * as Sharing from 'expo-sharing';
 import React, { useCallback, useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    Dimensions,
-    Linking,
-    Modal,
-    Platform,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View
+  ActivityIndicator,
+  Alert,
+  Dimensions,
+  Linking,
+  Modal,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -41,21 +41,21 @@ import { usePendingSyncNotification } from '@/hooks/usePendingSyncNotification';
 import { useNetworkStatus } from '../../../../context/NetworkContext';
 import api, { getUserData } from '../../../../lib/api';
 import {
-    checkIfAssessmentNeedsDetails,
-    deleteOfflineQuizAttempt,
-    getAssessmentDetailsFromDb,
-    getCompletedOfflineQuizzes,
-    getCurrentServerTime,
-    getOfflineAttemptCount,
-    getOfflineQuizAttempt,
-    getQuizQuestionsFromDb, // ADDED: Required for shuffling questions before start
-    getUnsyncedSubmissions,
-    hasAssessmentReviewSaved,
-    saveAssessmentDetailsToDb,
-    saveAssessmentReviewToDb,
-    saveAssessmentsToDb,
-    saveOfflineSubmission,
-    startOfflineQuiz
+  checkIfAssessmentNeedsDetails,
+  deleteOfflineQuizAttempt,
+  getAssessmentDetailsFromDb,
+  getCompletedOfflineQuizzes,
+  getCurrentServerTime,
+  getOfflineAttemptCount,
+  getOfflineQuizAttempt,
+  getQuizQuestionsFromDb, // ADDED: Required for shuffling questions before start
+  getUnsyncedSubmissions,
+  hasAssessmentReviewSaved,
+  saveAssessmentDetailsToDb,
+  saveAssessmentReviewToDb,
+  saveAssessmentsToDb,
+  saveOfflineSubmission,
+  startOfflineQuiz
 } from '../../../../lib/localDb';
 
 // File item in the files array (for assessments)
@@ -297,7 +297,8 @@ const getFileColorByExtension = (extension: string): string => {
   return '#6b7280';
 };
 
-const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
+const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100 MB (backend-aligned)
+const MAX_FILE_SIZE_LABEL = `${Math.round(MAX_FILE_SIZE / (1024 * 1024))}MB`;
 
 // --- UTILITY FUNCTION: Fisher-Yates shuffle algorithm ---
 // NOTE: This utility needs to be here to shuffle questions before saving.
@@ -367,6 +368,9 @@ export default function AssessmentDetailsScreen() {
   // State for file action sheet (when user taps download icon on a file)
   const [selectedFileForAction, setSelectedFileForAction] = useState<{file: AssessmentFile, index: number} | null>(null);
   const [showFileActionSheet, setShowFileActionSheet] = useState(false);
+
+  // Action sheet for the single "Assignment Instructions" file
+  const [showInstructionsActionSheet, setShowInstructionsActionSheet] = useState(false);
   
   // Download overlay state
   const [showDownloadOverlay, setShowDownloadOverlay] = useState(false);
@@ -694,16 +698,7 @@ export default function AssessmentDetailsScreen() {
       return;
     }
 
-    Alert.alert(
-      'Download Assessment File',
-      'Choose where you want to save the instructions file:',
-      [
-        { text: 'Download in the app', onPress: downloadToAppStorage },
-        { text: 'Download in device', onPress: downloadToDeviceExternal },
-        { text: 'Cancel', style: 'cancel' },
-      ],
-      { cancelable: true }
-    );
+    setShowInstructionsActionSheet(true);
   };
 
   const downloadToAppStorage = async () => {
@@ -715,6 +710,8 @@ export default function AssessmentDetailsScreen() {
       console.log('Download cancelled: File already downloaded');
       return;
     }
+
+    setShowInstructionsActionSheet(false);
 
     setIsDownloading(true);
     setDownloadProgress(0);
@@ -776,6 +773,8 @@ export default function AssessmentDetailsScreen() {
       console.log('Save to Device cancelled: Missing assessment_file_url');
       return;
     }
+
+    setShowInstructionsActionSheet(false);
     
     // Show progress
     setIsDownloading(true);
@@ -864,6 +863,13 @@ export default function AssessmentDetailsScreen() {
         await Sharing.shareAsync(downloadedFileUri);
       }
     }
+  };
+
+  const openInstructionsInApp = () => {
+    if (!downloadedFileUri) return;
+    setActiveFileViewerUri(downloadedFileUri);
+    setActiveFileViewerName('Instructions File');
+    setShowFileViewer(true);
   };
 
   const handleDeleteDownload = async () => {
@@ -1190,10 +1196,16 @@ export default function AssessmentDetailsScreen() {
   // Updated: Support multiple file selection
   const handlePickDocument = async (addMore = false) => {
     try {
+      const isOnlineNow = !!netInfo?.isInternetReachable;
+      if (!isOnlineNow && addMore) {
+        Alert.alert('Offline Mode', 'Offline submissions support a single file only.');
+        return;
+      }
+
       const result = await DocumentPicker.getDocumentAsync({
         type: '*/*',
         copyToCacheDirectory: true,
-        multiple: true, // Enable multiple file selection
+        multiple: isOnlineNow, // Offline: single file only
       });
 
       if (!result.canceled && result.assets && result.assets.length > 0) {
@@ -1207,7 +1219,7 @@ export default function AssessmentDetailsScreen() {
         if (totalSize > MAX_FILE_SIZE) {
           Alert.alert(
             'Total Size Exceeded', 
-            `The total size of all files exceeds 50MB.\n\nCurrent: ${formatBytes(existingSize)}\nNew files: ${formatBytes(newFilesSize)}\nLimit: 50MB`,
+            `The total size of all files exceeds ${MAX_FILE_SIZE_LABEL}.\n\nCurrent: ${formatBytes(existingSize)}\nNew files: ${formatBytes(newFilesSize)}\nLimit: ${MAX_FILE_SIZE_LABEL}`,
             [{ text: 'OK' }]
           );
           return;
@@ -1216,7 +1228,7 @@ export default function AssessmentDetailsScreen() {
         // Check individual file sizes
         const oversizedFile = newFiles.find(f => f.size && f.size > MAX_FILE_SIZE);
         if (oversizedFile) {
-          Alert.alert('File Too Large', `"${oversizedFile.name}" exceeds the 50MB limit.`);
+          Alert.alert('File Too Large', `"${oversizedFile.name}" exceeds the ${MAX_FILE_SIZE_LABEL} limit.`);
           return;
         }
         
@@ -1935,19 +1947,34 @@ export default function AssessmentDetailsScreen() {
                 {!netInfo?.isInternetReachable && <Text style={styles.offlineWarning}>Must be online to download</Text>}
               </TouchableOpacity>
             ) : (
-              // DOWNLOADED STATE (Show File Card similar to Material)
+              // DOWNLOADED STATE (Offline-first: open inside the app by default)
               <View style={styles.inlineViewerContainer}>
                 <View style={styles.viewerHeader}>
                   <Text style={styles.viewerTitle}>File Downloaded</Text>
-                  <TouchableOpacity style={styles.actionButton} onPress={handleDeleteDownload} disabled={isDeleting}>
-                    {isDeleting ? <ActivityIndicator size="small" color="#d93025" /> : <Ionicons name="trash-outline" size={20} color="#d93025" />}
-                  </TouchableOpacity>
+                  <View style={styles.viewerActions}>
+                    <TouchableOpacity
+                      style={styles.actionButton}
+                      onPress={() => setShowInstructionsActionSheet(true)}
+                    >
+                      <Ionicons name="ellipsis-horizontal" size={20} color="#4285f4" />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.actionButton}
+                      onPress={handleDeleteDownload}
+                      disabled={isDeleting}
+                    >
+                      {isDeleting ? <ActivityIndicator size="small" color="#d93025" /> : <Ionicons name="trash-outline" size={20} color="#d93025" />}
+                    </TouchableOpacity>
+                  </View>
                 </View>
                 <View style={styles.genericFileContainer}>
                   <Ionicons name={getFileIcon(getFileType(assessmentDetail.assessment_file_path || ''))} size={64} color="#4285f4" />
                   <Text style={styles.genericFileName}>Instructions File</Text>
-                  <TouchableOpacity style={styles.openFileButton} onPress={handleOpenFile}>
-                    <Text style={styles.openFileButtonText}>Open in...</Text>
+                  <TouchableOpacity style={styles.openFileButton} onPress={openInstructionsInApp}>
+                    <Text style={styles.openFileButtonText}>View in App</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[styles.openFileButton, { marginTop: 10, backgroundColor: '#5f6368' }]} onPress={handleOpenFile}>
+                    <Text style={styles.openFileButtonText}>Open with External App</Text>
                   </TouchableOpacity>
                 </View>
                 <View style={styles.downloadedIndicator}>
@@ -2245,7 +2272,7 @@ export default function AssessmentDetailsScreen() {
                   <View style={styles.fileSizeSummary}>
                     <Ionicons name="folder-open" size={18} color="#6366F1" />
                     <Text style={styles.fileSizeSummaryText}>
-                      {selectedFiles.length} file{selectedFiles.length > 1 ? 's' : ''} • {formatBytes(getTotalFileSize())} / 50MB
+                      {selectedFiles.length} file{selectedFiles.length > 1 ? 's' : ''} • {formatBytes(getTotalFileSize())} / {MAX_FILE_SIZE_LABEL}
                     </Text>
                     <View style={[
                       styles.fileSizeProgressBar,
@@ -2438,9 +2465,28 @@ export default function AssessmentDetailsScreen() {
       <Modal animationType="slide" transparent={true} visible={isSubmissionModalVisible} onRequestClose={() => setSubmissionModalVisible(false)}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContainer}>
-            <View style={styles.modalHeader}>
-              <Ionicons name="cloud-upload" size={32} color="#1967d2" />
-              <Text style={styles.modalTitle}>Choose Submission Type</Text>
+            <View style={styles.modalHandle} />
+
+            <View style={styles.modalHeaderRow}>
+              <View style={styles.modalHeaderLeft}>
+                <View style={styles.modalHeaderIconCircle}>
+                  <Ionicons name="cloud-upload" size={22} color="#1967d2" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.modalTitle}>Choose Submission Type</Text>
+                  <Text style={styles.modalSubtitle}>Upload files or submit a link</Text>
+                </View>
+              </View>
+              <TouchableOpacity
+                accessibilityRole="button"
+                onPress={() => {
+                  setSubmissionModalVisible(false);
+                  setSubmissionType(null);
+                }}
+                style={styles.modalCloseButton}
+              >
+                <Ionicons name="close" size={22} color="#5f6368" />
+              </TouchableOpacity>
             </View>
             
             <TouchableOpacity
@@ -2461,9 +2507,21 @@ export default function AssessmentDetailsScreen() {
               <Ionicons name="chevron-forward" size={20} color="#9CA3AF" />
             </TouchableOpacity>
             
-            <View style={styles.modalFileLimitBadge}>
-              <Ionicons name="information-circle" size={14} color="#6366F1" />
-              <Text style={styles.modalHint}>Maximum total: 50MB • Offline: single file only</Text>
+            <View style={styles.modalPillsRow}>
+              <View style={styles.modalPill}>
+                <Ionicons name="speedometer-outline" size={14} color="#6366F1" />
+                <Text style={styles.modalPillText}>Max total: {MAX_FILE_SIZE_LABEL}</Text>
+              </View>
+              <View style={[styles.modalPill, !netInfo?.isInternetReachable && styles.modalPillOffline]}>
+                <Ionicons
+                  name={!netInfo?.isInternetReachable ? 'cloud-offline-outline' : 'cloud-done-outline'}
+                  size={14}
+                  color={!netInfo?.isInternetReachable ? '#f59e0b' : '#16a34a'}
+                />
+                <Text style={[styles.modalPillText, !netInfo?.isInternetReachable && styles.modalPillTextOffline]}>
+                  {!netInfo?.isInternetReachable ? 'Offline: single file only' : 'Online: multiple files'}
+                </Text>
+              </View>
             </View>
             
             <TouchableOpacity
@@ -2693,6 +2751,81 @@ export default function AssessmentDetailsScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* Action Sheet for the single Instructions file */}
+      <FileActionSheet
+        visible={showInstructionsActionSheet}
+        onClose={() => setShowInstructionsActionSheet(false)}
+        fileName={assessmentDetail?.title ? `${assessmentDetail.title} (Instructions)` : 'Instructions File'}
+        fileSize={fileSize || undefined}
+        fileType={getFileType(assessmentDetail?.assessment_file_path || '') as any}
+        isCached={!!downloadedFileUri}
+        actions={[
+          ...(downloadedFileUri ? [
+            {
+              icon: 'eye-outline' as const,
+              label: 'View in App',
+              subtitle: 'Open inside the app',
+              onPress: () => {
+                setShowInstructionsActionSheet(false);
+                openInstructionsInApp();
+              },
+              color: '#16a34a',
+            },
+            {
+              icon: 'open-outline' as const,
+              label: 'Open with External App',
+              subtitle: 'Choose another app to open',
+              onPress: () => {
+                setShowInstructionsActionSheet(false);
+                handleOpenFile();
+              },
+              color: '#4285f4',
+            },
+            {
+              icon: 'share-outline' as const,
+              label: 'Share File',
+              subtitle: 'Share with other apps',
+              onPress: async () => {
+                setShowInstructionsActionSheet(false);
+                if (downloadedFileUri && await Sharing.isAvailableAsync()) {
+                  await Sharing.shareAsync(downloadedFileUri);
+                }
+              },
+              color: '#9333ea',
+            },
+          ] : []),
+          {
+            icon: 'phone-portrait-outline',
+            label: 'Save to App',
+            subtitle: 'Access offline within the app',
+            onPress: () => {
+              downloadToAppStorage();
+            },
+            color: '#1967d2',
+            disabled: !!downloadedFileUri,
+          },
+          {
+            icon: 'folder-outline',
+            label: 'Save to Device',
+            subtitle: 'Auto-save to Downloads folder',
+            onPress: () => {
+              downloadToDeviceExternal();
+            },
+            color: '#16a34a',
+          },
+          ...(downloadedFileUri ? [{
+            icon: 'trash-outline' as const,
+            label: 'Remove Download',
+            subtitle: 'Delete from app storage',
+            onPress: () => {
+              setShowInstructionsActionSheet(false);
+              handleDeleteDownload();
+            },
+            color: '#ef4444',
+          }] : []),
+        ]}
+      />
 
       {/* File Action Sheet for Assessment Files */}
       <FileActionSheet
@@ -3015,28 +3148,74 @@ const styles = StyleSheet.create({
     borderColor: '#1967d2',
   },
   submissionPreviewText: { flex: 1, fontSize: isTablet ? 16 : 14, color: '#202124' },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.6)', justifyContent: 'center', alignItems: 'center' },
-  modalContainer: { 
-    width: isTablet ? '70%' : '90%', 
-    maxWidth: 500,
-    backgroundColor: '#fff', 
-    borderRadius: 12, 
-    padding: isTablet ? 32 : 24, 
-    gap: isTablet ? 20 : 16 
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.55)',
+    justifyContent: 'flex-end',
+    alignItems: 'stretch',
+    paddingHorizontal: isTablet ? 24 : 0,
   },
-  modalTitle: { fontSize: isTablet ? 24 : 20, fontWeight: '600', color: '#202124', textAlign: 'center', marginBottom: 8 },
+  modalContainer: {
+    width: '100%',
+    maxWidth: isTablet ? 520 : undefined,
+    alignSelf: 'center',
+    backgroundColor: '#fff',
+    borderTopLeftRadius: isTablet ? 20 : 18,
+    borderTopRightRadius: isTablet ? 20 : 18,
+    padding: isTablet ? 28 : 20,
+    paddingBottom: isTablet ? 28 : 18,
+    gap: isTablet ? 16 : 12,
+  },
+  modalHandle: {
+    alignSelf: 'center',
+    width: 44,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: '#d1d5db',
+    marginBottom: isTablet ? 16 : 12,
+  },
+  modalHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: isTablet ? 6 : 4,
+  },
+  modalHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    gap: 12,
+  },
+  modalHeaderIconCircle: {
+    width: isTablet ? 44 : 40,
+    height: isTablet ? 44 : 40,
+    borderRadius: 22,
+    backgroundColor: '#E8F0FE',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalTitle: { fontSize: isTablet ? 20 : 18, fontWeight: '700', color: '#111827' },
+  modalSubtitle: { fontSize: isTablet ? 14 : 12, color: '#6b7280', marginTop: 2 },
+  modalCloseButton: {
+    width: isTablet ? 40 : 36,
+    height: isTablet ? 40 : 36,
+    borderRadius: 18,
+    backgroundColor: '#f3f4f6',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   modalButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#f8f9fa',
+    backgroundColor: '#f8fafc',
     borderRadius: isTablet ? 10 : 8,
     padding: isTablet ? 20 : 16,
     gap: isTablet ? 16 : 12,
-    borderWidth: 1,
-    borderColor: '#e0e0e0',
+    borderWidth: 1.5,
+    borderColor: '#e5e7eb',
   },
-  modalButtonText: { fontSize: isTablet ? 18 : 16, fontWeight: '500', color: '#202124' },
-  modalHint: { fontSize: isTablet ? 14 : 12, color: '#5f6368', textAlign: 'center', marginTop: -8 },
+  modalButtonText: { fontSize: isTablet ? 16 : 15, fontWeight: '700', color: '#111827' },
   linkInputContainer: { marginTop: isTablet ? 12 : 8, gap: 8 },
   linkInput: { 
     borderWidth: 1, 
@@ -3096,6 +3275,7 @@ const styles = StyleSheet.create({
   },
   viewerTitle: { fontSize: isTablet ? 18 : 16, fontWeight: '500', color: '#202124' },
   actionButton: { padding: isTablet ? 8 : 6 },
+  viewerActions: { flexDirection: 'row', gap: isTablet ? 12 : 8 },
   genericFileContainer: { padding: isTablet ? 48 : 32, alignItems: 'center' },
   genericFileName: { fontSize: isTablet ? 18 : 16, color: '#202124', marginTop: isTablet ? 20 : 16, marginBottom: isTablet ? 24 : 20, textAlign: 'center' },
   openFileButton: { backgroundColor: '#1967d2', paddingVertical: isTablet ? 14 : 10, paddingHorizontal: isTablet ? 28 : 20, borderRadius: 8 },
@@ -3214,10 +3394,6 @@ const styles = StyleSheet.create({
   // ============================================
   // MODAL STYLES - Enhanced UI
   // ============================================
-  modalHeader: {
-    alignItems: 'center',
-    marginBottom: isTablet ? 24 : 20,
-  },
   modalButtonIconContainer: {
     width: isTablet ? 48 : 40,
     height: isTablet ? 48 : 40,
@@ -3244,6 +3420,33 @@ const styles = StyleSheet.create({
     paddingVertical: isTablet ? 10 : 8,
     borderRadius: 8,
     marginBottom: isTablet ? 16 : 12,
+  },
+
+  modalPillsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: isTablet ? 16 : 12,
+  },
+  modalPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: '#EEF2FF',
+  },
+  modalPillOffline: {
+    backgroundColor: '#FFFBEB',
+  },
+  modalPillText: {
+    fontSize: isTablet ? 13 : 12,
+    color: '#4f46e5',
+    fontWeight: '600',
+  },
+  modalPillTextOffline: {
+    color: '#b45309',
   },
 
   // ============================================

@@ -109,16 +109,27 @@ export default function ImageViewer({
         <View style={styles.errorContainer}>
           <Ionicons name="image-outline" size={64} color="#9ca3af" />
           <Text style={styles.errorText}>Failed to load image</Text>
-          {!isCached && isOnline && (
+          <Text style={styles.errorHint}>
+            {isCached 
+              ? 'This image file may be corrupted'
+              : !isOnline 
+                ? 'No internet connection'
+                : 'Unable to load image'}
+          </Text>
+          {isOnline && (
             <TouchableOpacity style={styles.retryButton} onPress={() => {
               setIsLoading(true);
               setHasError(false);
             }}>
+              <Ionicons name="refresh" size={18} color="#374151" />
               <Text style={styles.retryButtonText}>Retry</Text>
             </TouchableOpacity>
           )}
-          {!isCached && !isOnline && (
-            <Text style={styles.offlineHint}>Download for offline viewing</Text>
+          {!isCached && onDownload && (
+            <TouchableOpacity style={styles.downloadButton} onPress={onDownload}>
+              <Ionicons name="download" size={18} color="#fff" />
+              <Text style={styles.downloadButtonText}>Download</Text>
+            </TouchableOpacity>
           )}
         </View>
       ) : (
@@ -352,15 +363,40 @@ const styles = StyleSheet.create({
     marginTop: 12,
     fontSize: 14,
     color: '#6b7280',
+    textAlign: 'center',
+  },
+  errorHint: {
+    fontSize: 12,
+    color: '#9ca3af',
+    marginTop: 8,
+    textAlign: 'center',
   },
   retryButton: {
-    marginTop: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    backgroundColor: '#1967d2',
-    borderRadius: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 16,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    backgroundColor: '#f3f4f6',
+    borderRadius: 24,
   },
   retryButtonText: {
+    color: '#374151',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  downloadButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 12,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    backgroundColor: '#1967d2',
+    borderRadius: 24,
+  },
+  downloadButtonText: {
     color: '#fff',
     fontSize: 14,
     fontWeight: '600',

@@ -255,12 +255,23 @@ export default function AudioPlayer({
         <View style={styles.errorContainer}>
           <Ionicons name="musical-notes-outline" size={48} color="#9ca3af" />
           <Text style={styles.errorText}>Failed to load audio</Text>
-          {!isCached && !isOnline && (
-            <Text style={styles.offlineHint}>Download for offline listening</Text>
-          )}
+          <Text style={styles.offlineHint}>
+            {isCached 
+              ? 'This audio file may be corrupted or in an unsupported format'
+              : !isOnline 
+                ? 'Download this audio for offline listening'
+                : 'Unable to stream audio. Try downloading it.'}
+          </Text>
           <TouchableOpacity style={styles.retryButton} onPress={loadAudio}>
+            <Ionicons name="refresh" size={18} color="#374151" />
             <Text style={styles.retryText}>Retry</Text>
           </TouchableOpacity>
+          {!isCached && onDownload && (
+            <TouchableOpacity style={styles.downloadButton} onPress={onDownload}>
+              <Ionicons name="download" size={18} color="#fff" />
+              <Text style={styles.downloadButtonText}>Download</Text>
+            </TouchableOpacity>
+          )}
         </View>
       </View>
     );
@@ -494,6 +505,21 @@ const styles = StyleSheet.create({
   retryText: {
     color: '#fff',
     fontWeight: '600',
+  },
+  downloadButton: {
+    marginTop: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    backgroundColor: '#1967d2',
+    borderRadius: 20,
+  },
+  downloadButtonText: {
+    color: '#fff',
+    fontWeight: '700',
   },
   header: {
     flexDirection: 'row',

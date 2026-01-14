@@ -5,27 +5,27 @@ import { ActivityIndicator, Alert, Animated, Dimensions, FlatList, Image, Modal,
 
 import { useNetworkStatus } from '../../context/NetworkContext';
 import api, {
-  clearAuthToken, getAuthToken,
-  getProfile,
-  getServerTime, getUserData, hasCompletedTutorial, setTutorialCompleted, // <--- Add this
-  storeUserData,
-  syncOfflineQuiz, syncOfflineSubmission,
+    clearAuthToken, getAuthToken,
+    getProfile,
+    getServerTime, getUserData, hasCompletedTutorial, setTutorialCompleted, // <--- Add this
+    storeUserData,
+    syncOfflineQuiz, syncOfflineSubmission,
 } from '../../lib/api';
 import {
-  deleteCompletedOfflineQuizAttempt,
-  deleteOfflineSubmission,
-  downloadAllQuizQuestions,
-  getCompletedOfflineQuizzes,
-  getDb,
-  getEnrolledCoursesFromDb,
-  getOfflineTimeStatus,
-  getUnsyncedSubmissions,
-  getUserStorageUsage,
-  saveCourseDetailsToDb,
-  saveCourseToDb,
-  saveServerTime,
-  syncAllAssessmentDetails,
-  updateTimeSync
+    deleteCompletedOfflineQuizAttempt,
+    deleteOfflineSubmission,
+    downloadAllQuizQuestions,
+    getCompletedOfflineQuizzes,
+    getDb,
+    getEnrolledCoursesFromDb,
+    getOfflineTimeStatus,
+    getUnsyncedSubmissions,
+    getUserStorageUsage,
+    saveCourseDetailsToDb,
+    saveCourseToDb,
+    saveServerTime,
+    syncAllAssessmentDetails,
+    updateTimeSync
 } from '../../lib/localDb';
 import { showOfflineModeGuide } from '../../lib/offlineWarning';
 const { width, height } = Dimensions.get('window');
@@ -475,7 +475,7 @@ useEffect(() => {
              
              let suggestion = "\n\n💡 Try checking your internet connection or restarting the app.";
              if (errors.some(e => e.includes('413') || e.includes('Large'))) {
-                suggestion = "\n\n💡 One or more files may be too large (Max 50MB).";
+               suggestion = "\n\n💡 One or more files may be too large (Max 100MB).";
              }
 
              setTimeout(() => {

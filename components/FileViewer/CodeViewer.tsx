@@ -117,7 +117,13 @@ export default function CodeViewer({
       setHasError(false);
 
       // Try to read from local file first (if cached)
-      if (isCached || uri.startsWith('file://') || uri.startsWith(FileSystem.documentDirectory || '')) {
+      const isLocalUri =
+        isCached ||
+        uri.startsWith('file://') ||
+        (!!FileSystem.documentDirectory && uri.startsWith(FileSystem.documentDirectory)) ||
+        (!!FileSystem.cacheDirectory && uri.startsWith(FileSystem.cacheDirectory));
+
+      if (isLocalUri) {
         const content = await FileSystem.readAsStringAsync(uri);
         setCode(content);
         setIsLoading(false);

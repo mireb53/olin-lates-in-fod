@@ -175,7 +175,7 @@ export default function UnsupportedViewer({
         <View style={styles.tipItem}>
           <Ionicons name="checkmark" size={14} color="#16a34a" />
           <Text style={styles.tipText}>
-            Use "Open with" to view in compatible apps
+            Use the Open with option to view in compatible apps
           </Text>
         </View>
         <View style={styles.tipItem}>

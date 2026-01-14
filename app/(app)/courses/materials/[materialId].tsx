@@ -8,6 +8,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   Dimensions,
   Image,
   Linking,
@@ -20,8 +21,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { WebView } from 'react-native-webview';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { getCompletedOfflineQuizzes, getMaterialDetailsFromDb, getUnsyncedSubmissions } from '@/lib/localDb';
 import { syncAllOfflineData } from '@/lib/offlineSync';
@@ -250,6 +250,48 @@ const contentMaxWidth = isLargeTablet ? 900 : isTablet ? 700 : screenWidth;
 export default function MaterialDetailsScreen() {
   const { id: courseId, materialId } = useLocalSearchParams();
   const { isConnected, netInfo } = useNetworkStatus();
+  const insets = useSafeAreaInsets();
+
+  const toastAnim = useRef(new Animated.Value(0)).current;
+  const toastHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [toastVariant, setToastVariant] = useState<'info' | 'warning'>('info');
+
+  const showToast = useCallback((message: string, variant: 'info' | 'warning' = 'info') => {
+    setToastMessage(message);
+    setToastVariant(variant);
+
+    if (toastHideTimer.current) {
+      clearTimeout(toastHideTimer.current);
+      toastHideTimer.current = null;
+    }
+
+    toastAnim.stopAnimation();
+    Animated.timing(toastAnim, {
+      toValue: 1,
+      duration: 180,
+      useNativeDriver: true,
+    }).start();
+
+    toastHideTimer.current = setTimeout(() => {
+      Animated.timing(toastAnim, {
+        toValue: 0,
+        duration: 180,
+        useNativeDriver: true,
+      }).start(({ finished }) => {
+        if (finished) setToastMessage(null);
+      });
+    }, 2600);
+  }, [toastAnim]);
+
+  useEffect(() => {
+    return () => {
+      if (toastHideTimer.current) {
+        clearTimeout(toastHideTimer.current);
+        toastHideTimer.current = null;
+      }
+    };
+  }, []);
 
   const [materialDetail, setMaterialDetail] = useState<MaterialDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -266,6 +308,10 @@ export default function MaterialDetailsScreen() {
   const videoRef = useRef<Video>(null);
   const [sound, setSound] = useState<Audio.Sound | null>(null);
 
+  const [inlineAudioIsPlaying, setInlineAudioIsPlaying] = useState(false);
+  const [inlineAudioDuration, setInlineAudioDuration] = useState(0);
+  const [inlineAudioPosition, setInlineAudioPosition] = useState(0);
+
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [downloadDate, setDownloadDate] = useState<string | null>(null);
   const [fileSize, setFileSize] = useState<string | null>(null);
@@ -276,7 +322,6 @@ export default function MaterialDetailsScreen() {
   const [imageError, setImageError] = useState(false);
 
   const [showFallback, setShowFallback] = useState(false);
-  const [generatingLink, setGeneratingLink] = useState(false); 
   const [imageLoaded, setImageLoaded] = useState(false);
   const [videoLoaded, setVideoLoaded] = useState(false);
 
@@ -335,64 +380,6 @@ export default function MaterialDetailsScreen() {
 
     submitOfflineAssessments();
   }, [netInfo?.isInternetReachable]);
-
-  const handleBrowserPreview = async () => {
-    if (!netInfo?.isInternetReachable) {
-      Alert.alert('Offline', 'Internet connection required for browser preview.');
-      return;
-    }
-    
-    setGeneratingLink(true);
-    try {
-      const response = await api.post(`/materials/${materialId}/generate-link`);
-      
-      if (response.data && response.data.url) {
-        const signedUrl = response.data.url;
-        const extension = materialDetail?.file_path?.split('.').pop()?.toLowerCase();
-        
-        // --- MODIFIED SECTION STARTS HERE ---
-        
-        // 1. PDF Files -> Use Google Docs Viewer to prevent auto-download
-        if (extension === 'pdf') {
-          // We wrap the URL in the Google Viewer immediately
-          const viewerUrl = `https://docs.google.com/viewer?url=${encodeURIComponent(signedUrl)}&embedded=true`;
-          
-          const supported = await Linking.canOpenURL(viewerUrl);
-          if (supported) {
-            await Linking.openURL(viewerUrl);
-          } else {
-            // Fallback to direct link if for some reason the viewer fails
-            await Linking.openURL(signedUrl);
-          }
-        }
-        
-        // --- MODIFIED SECTION ENDS HERE ---
-
-        // 2. Office Documents -> Use Microsoft Office Online Viewer (Keep this as is)
-        else if (extension && ['doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx'].includes(extension)) {
-          const viewerUrl = `https://view.officeapps.live.com/op/view.aspx?src=${encodeURIComponent(signedUrl)}`;
-          
-          const supported = await Linking.canOpenURL(viewerUrl);
-          if (supported) {
-            await Linking.openURL(viewerUrl);
-          } else {
-            await Linking.openURL(signedUrl);
-          }
-        }
-        // 3. All other files -> Open Direct Link
-        else {
-          await Linking.openURL(signedUrl);
-        }
-      } else {
-        Alert.alert('Error', 'Could not generate preview link.');
-      }
-    } catch (error) {
-      console.error('Preview link generation failed:', error);
-      Alert.alert('Error', 'Failed to generate preview link.');
-    } finally {
-      setGeneratingLink(false);
-    }
-  };
 
   const fetchMaterialDetails = async () => {
     setLoading(true);
@@ -530,50 +517,6 @@ export default function MaterialDetailsScreen() {
     }
   };
 
-  const renderOnlineDocumentViewer = () => {
-    if (!onlinePreviewUri) return null;
-
-    // Use Google Docs Viewer for remote files
-    // NOTE: This requires your API to be accessible from the public internet (not localhost)
-    const googleDocsUrl = `https://docs.google.com/viewer?url=${encodeURIComponent(onlinePreviewUri)}&embedded=true`;
-
-    return (
-      <View style={styles.inlineViewerContainer}>
-        <View style={styles.viewerHeader}>
-          <Text style={styles.viewerTitle}>Document Preview</Text>
-          <View style={styles.viewerActions}>
-            <TouchableOpacity style={styles.actionButton} onPress={() => setIsFullScreen(true)}>
-              <Ionicons name="expand" size={20} color="#4285f4" />
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.actionButton} onPress={promptDownloadOptions}>
-              <Ionicons name="download" size={20} color="#4285f4" />
-            </TouchableOpacity>
-          </View>
-        </View>
-        
-        <View style={{ height: 400, backgroundColor: '#f1f3f4' }}>
-          <WebView
-            source={{ uri: googleDocsUrl }}
-            style={{ flex: 1 }}
-            startInLoadingState={true}
-            renderLoading={() => <ActivityIndicator size="large" color="#1967d2" style={{position: 'absolute', top: '50%', left: '50%'}} />}
-            onError={(e) => {
-               console.log("WebView Error", e.nativeEvent);
-               // Optional: Set preview failed here if you want to fall back to download
-            }}
-          />
-        </View>
-
-        <View style={[styles.downloadedIndicator, { backgroundColor: '#e8f0fe' }]}>
-          <Ionicons name="cloud" size={16} color="#1967d2" />
-          <Text style={[styles.downloadedText, { color: '#1967d2' }]}>
-            Viewing online • Download for offline access
-          </Text>
-        </View>
-      </View>
-    );
-  };
-
   const getFileType = (filePath: string): FileType => {
     if (!filePath) return 'other';
     const extension = filePath.split('.').pop()?.toLowerCase();
@@ -591,6 +534,19 @@ export default function MaterialDetailsScreen() {
       return 'code';
 
     return 'other';
+  };
+
+  const getLegacySingleFileViewerName = (): string => {
+    const title = materialDetail?.title || 'File';
+    const filePath = materialDetail?.file_path || '';
+    const ext = filePath.split('.').pop()?.toLowerCase();
+
+    if (ext && !title.toLowerCase().endsWith(`.${ext}`)) {
+      return `${title}.${ext}`;
+    }
+
+    const baseName = filePath.split('/').pop();
+    return baseName || title;
   };
 
   const getFileIcon = (fileType: FileType) => {
@@ -612,7 +568,7 @@ export default function MaterialDetailsScreen() {
     }
   };
 
-  const getAuthenticatedFileUrl = async (): Promise<string | null> => {
+  const getAuthenticatedFileUrl = async (fileIndex?: number): Promise<string | null> => {
     if (!materialDetail?.id) return null;
 
     try {
@@ -634,7 +590,7 @@ export default function MaterialDetailsScreen() {
 
       // Append a timestamp to prevent aggressive caching of broken attempts
       const timestamp = new Date().getTime();
-      const url = `${api.defaults.baseURL}/materials/${materialDetail.id}/view?token=${encodeURIComponent(token)}&t=${timestamp}`;
+      const url = `${api.defaults.baseURL}/materials/${materialDetail.id}/view?token=${encodeURIComponent(token)}${typeof fileIndex === 'number' ? `&file_index=${fileIndex}` : ''}&t=${timestamp}`;
 
       return url;
     } catch (error) {
@@ -684,16 +640,13 @@ export default function MaterialDetailsScreen() {
       setShowFileViewer(true);
       return;
     }
-    
-    // Show download options for non-downloaded files
+
     if (!netInfo?.isInternetReachable) {
-      Alert.alert('Offline Mode', 'Internet connection required to download this file.');
+      showToast('Offline: download requires internet. Tap ⋯ when online.', 'warning');
       return;
     }
-    
-    // Set selected file and show action sheet
-    setSelectedFileForAction({ file, index: fileIndex });
-    setShowFileActionSheet(true);
+
+    showToast('Not downloaded yet. Tap ⋯ for View Online / Download options.', 'info');
   };
 
   // Download file to app storage (from files list)
@@ -973,6 +926,39 @@ export default function MaterialDetailsScreen() {
     setShowActionSheet(true);
   };
 
+  const viewLegacySingleOnline = async () => {
+    if (!netInfo?.isInternetReachable) {
+      Alert.alert('Offline Mode', 'Internet connection required to view online.');
+      return;
+    }
+
+    const fileUrl = await getAuthenticatedFileUrl();
+    if (!fileUrl) return;
+
+    setActiveFileViewerUri(fileUrl);
+    setActiveFileViewerName(getLegacySingleFileViewerName());
+    setShowFileViewer(true);
+  };
+
+  const viewOnlineFileFromList = async (fileIndex: number, fileName: string) => {
+    if (!netInfo?.isInternetReachable) {
+      Alert.alert('Offline Mode', 'Internet connection required to view online.');
+      return;
+    }
+
+    const fileUrl = await getAuthenticatedFileUrl(fileIndex);
+    if (!fileUrl) return;
+
+    setActiveFileViewerUri(fileUrl);
+    setActiveFileViewerName(fileName);
+    setShowFileViewer(true);
+  };
+
+  const openFileOptionsForListItem = (file: MaterialFile, index: number) => {
+    setSelectedFileForAction({ file, index });
+    setShowFileActionSheet(true);
+  };
+
   const downloadToAppStorage = async () => {
     if (!materialDetail?.file_path || !materialDetail?.id) {
       console.log('Download cancelled: Missing file_path or id');
@@ -1207,62 +1193,6 @@ export default function MaterialDetailsScreen() {
       setShowFallback(false);
     }
   }, [previewFailed]);
-
-  const handleViewOnline = async () => {
-    if (!netInfo?.isInternetReachable) {
-      Alert.alert('Offline Mode', 'Online viewing requires an internet connection.');
-      return;
-    }
-
-    const fileUrl = await getAuthenticatedFileUrl();
-    if (!fileUrl) return;
-
-    const fileType = getFileType(materialDetail?.file_path || '');
-
-    // For documents and PDFs, offer viewing in Google Docs
-    if (['pdf', 'document'].includes(fileType)) {
-      Alert.alert(
-        'Choose Viewer',
-        'We recommend using Google Docs Viewer to open this file.',
-        [
-          {
-            text: 'Google Docs',
-            onPress: async () => {
-              try {
-                const googleDocsUrl = `https://docs.google.com/viewer?url=${encodeURIComponent(fileUrl)}&embedded=true`;
-                const supported = await Linking.canOpenURL(googleDocsUrl);
-                if (supported) {
-                  await Linking.openURL(googleDocsUrl);
-                } else {
-                  Alert.alert('Error', 'Cannot open Google Docs Viewer.');
-                }
-              } catch (error) {
-                Alert.alert('Error', 'Could not open with Google Docs Viewer.');
-                console.error('Google Docs Viewer error:', error);
-              }
-            },
-          },
-          {
-            text: 'Cancel',
-            style: 'cancel',
-          },
-        ]
-      );
-    } else {
-      // For other file types (images, videos, etc.), open directly
-      try {
-        const supported = await Linking.canOpenURL(fileUrl);
-        if (supported) {
-          await Linking.openURL(fileUrl);
-        } else {
-          Alert.alert('Cannot Open Link', 'No application available to open this file.');
-        }
-      } catch (error) {
-        Alert.alert('Error', 'Could not open the link. Please try again.');
-        console.error('Failed to open URL with Linking:', error);
-      }
-    }
-  };
 
   const handleOpenFile = async () => {
     if (!downloadedFileUri) return;
@@ -1913,10 +1843,6 @@ export default function MaterialDetailsScreen() {
   );
 
   const renderAudioViewer = () => {
-    const [isPlaying, setIsPlaying] = useState(false);
-    const [duration, setDuration] = useState(0);
-    const [position, setPosition] = useState(0);
-
     const playPauseAudio = async () => {
       try {
         if (sound) {
@@ -1924,10 +1850,10 @@ export default function MaterialDetailsScreen() {
           if (status.isLoaded) {
             if (status.isPlaying) {
               await sound.pauseAsync();
-              setIsPlaying(false);
+              setInlineAudioIsPlaying(false);
             } else {
               await sound.playAsync();
-              setIsPlaying(true);
+              setInlineAudioIsPlaying(true);
             }
             return;
           }
@@ -1939,19 +1865,19 @@ export default function MaterialDetailsScreen() {
           { shouldPlay: true },
           (status) => {
             if (status.isLoaded) {
-              setIsPlaying(status.isPlaying);
-              setDuration(status.durationMillis || 0);
-              setPosition(status.positionMillis || 0);
+              setInlineAudioIsPlaying(status.isPlaying);
+              setInlineAudioDuration(status.durationMillis || 0);
+              setInlineAudioPosition(status.positionMillis || 0);
               
               if (status.didJustFinish) {
-                setIsPlaying(false);
-                setPosition(0);
+                setInlineAudioIsPlaying(false);
+                setInlineAudioPosition(0);
               }
             }
           }
         );
         setSound(newSound);
-        setIsPlaying(true);
+        setInlineAudioIsPlaying(true);
       } catch (error) {
         Alert.alert('Error', 'Could not play audio file.');
       }
@@ -1960,23 +1886,23 @@ export default function MaterialDetailsScreen() {
     const seekAudio = async (value: number) => {
       if (sound) {
         await sound.setPositionAsync(value);
-        setPosition(value);
+        setInlineAudioPosition(value);
       }
     };
 
     const skipForward = async () => {
-      if (sound && duration > 0) {
-        const newPosition = Math.min(position + 10000, duration);
+      if (sound && inlineAudioDuration > 0) {
+        const newPosition = Math.min(inlineAudioPosition + 10000, inlineAudioDuration);
         await sound.setPositionAsync(newPosition);
-        setPosition(newPosition);
+        setInlineAudioPosition(newPosition);
       }
     };
 
     const skipBackward = async () => {
       if (sound) {
-        const newPosition = Math.max(position - 10000, 0);
+        const newPosition = Math.max(inlineAudioPosition - 10000, 0);
         await sound.setPositionAsync(newPosition);
-        setPosition(newPosition);
+        setInlineAudioPosition(newPosition);
       }
     };
 
@@ -2011,13 +1937,13 @@ export default function MaterialDetailsScreen() {
           
           {/* Progress Bar */}
           <View style={styles.audioProgressContainer}>
-            <Text style={styles.audioTimeText}>{formatTime(position)}</Text>
+            <Text style={styles.audioTimeText}>{formatTime(inlineAudioPosition)}</Text>
             <View style={styles.audioSliderContainer}>
               <View style={styles.audioSliderTrack}>
                 <View 
                   style={[
                     styles.audioSliderFill, 
-                    { width: duration > 0 ? `${(position / duration) * 100}%` : '0%' }
+                    { width: inlineAudioDuration > 0 ? `${(inlineAudioPosition / inlineAudioDuration) * 100}%` : '0%' }
                   ]} 
                 />
               </View>
@@ -2026,7 +1952,7 @@ export default function MaterialDetailsScreen() {
                 onPress={() => {}}
               />
             </View>
-            <Text style={styles.audioTimeText}>{formatTime(duration)}</Text>
+            <Text style={styles.audioTimeText}>{formatTime(inlineAudioDuration)}</Text>
           </View>
           
           {/* Controls */}
@@ -2038,7 +1964,7 @@ export default function MaterialDetailsScreen() {
             
             <TouchableOpacity style={styles.audioPlayPauseButton} onPress={playPauseAudio}>
               <Ionicons 
-                name={isPlaying ? "pause-circle" : "play-circle"} 
+                name={inlineAudioIsPlaying ? "pause-circle" : "play-circle"} 
                 size={64} 
                 color="#4285f4" 
               />
@@ -2177,12 +2103,6 @@ export default function MaterialDetailsScreen() {
                 </ScrollView>
               </ScrollView>
             )}
-            {(fileType === 'pdf' || fileType === 'document') && isOnline && (
-                 <WebView
-                 source={{ uri: `https://docs.google.com/viewer?url=${encodeURIComponent(previewUri)}&embedded=true` }}
-                 style={{ flex: 1, width: screenWidth }}
-               />
-            )}
           </View>
         </SafeAreaView>
       </Modal>
@@ -2294,14 +2214,29 @@ export default function MaterialDetailsScreen() {
               {materialDetail.files.map((file, index) => {
                 const isDownloaded = downloadedFiles.some(d => d.materialFileIndex === index);
                 const isCurrentlyDownloading = currentDownloadingFileIndex === index;
+                const canViewOnline = !!netInfo?.isInternetReachable;
                 
                 return (
-                  <View 
+                  <TouchableOpacity 
                     key={index} 
                     style={[
                       styles.fileItemCard,
                       isDownloaded && styles.fileItemCardDownloaded,
                     ]}
+                    onPress={async () => {
+                      if (!isDownloaded) {
+                        handleFileCardPress(file, index);
+                        return;
+                      }
+                      const downloadedFile = downloadedFiles.find(d => d.materialFileIndex === index);
+                      if (downloadedFile) {
+                        setActiveFileViewerUri(downloadedFile.uri);
+                        setActiveFileViewerName(downloadedFile.fileName);
+                        setShowFileViewer(true);
+                      }
+                    }}
+                    disabled={!isDownloaded}
+                    activeOpacity={0.85}
                   >
                     <View style={[
                       styles.fileItemIcon,
@@ -2326,38 +2261,32 @@ export default function MaterialDetailsScreen() {
                           </View>
                         )}
                       </View>
+                      {!isDownloaded && canViewOnline && (
+                        <Text style={styles.fileItemMeta}>
+                          Tap ⋯ for options
+                        </Text>
+                      )}
                     </View>
                     {/* Action Button */}
                     {isCurrentlyDownloading ? (
                       <ActivityIndicator size="small" color="#1967d2" style={styles.fileActionButton} />
-                    ) : isDownloaded ? (
-                      <TouchableOpacity 
-                        style={styles.fileActionButton}
-                        onPress={() => {
-                          const downloadedFile = downloadedFiles.find(d => d.materialFileIndex === index);
-                          if (downloadedFile) {
-                            setActiveFileViewerUri(downloadedFile.uri);
-                            setActiveFileViewerName(downloadedFile.fileName);
-                            setShowFileViewer(true);
-                          }
-                        }}
-                      >
-                        <Ionicons name="eye-outline" size={22} color="#16a34a" />
-                      </TouchableOpacity>
                     ) : (
                       <TouchableOpacity 
                         style={styles.fileActionButton}
-                        onPress={() => handleFileCardPress(file, index)}
-                        disabled={!netInfo?.isInternetReachable}
+                        onPress={(e: any) => {
+                          e?.stopPropagation?.();
+                          openFileOptionsForListItem(file, index);
+                        }}
+                        disabled={isCurrentlyDownloading}
                       >
                         <Ionicons 
-                          name="download-outline" 
+                          name="ellipsis-horizontal" 
                           size={22} 
-                          color={netInfo?.isInternetReachable ? '#1967d2' : '#9aa0a6'} 
+                          color={isDownloaded ? '#16a34a' : (canViewOnline ? '#1967d2' : '#9aa0a6')} 
                         />
                       </TouchableOpacity>
                     )}
-                  </View>
+                  </TouchableOpacity>
                 );
               })}
             </View>
@@ -2365,7 +2294,7 @@ export default function MaterialDetailsScreen() {
         )}
 
         {/* Legacy Single File Section - Same UI as multiple files */}
-        {materialDetail.file_path && materialDetail.material_type?.toLowerCase() !== 'link' && (!materialDetail.files || materialDetail.files.length === 0) && (
+        {materialDetail.file_path && materialDetail.material_type?.toLowerCase() !== 'link' && (!materialDetail.files || materialDetail.files.length === 0) && downloadedFiles.length === 0 && (
           <View style={styles.sectionContainer}>
             <View style={styles.filesSectionHeader}>
               <View style={styles.filesSectionTitleRow}>
@@ -2380,11 +2309,27 @@ export default function MaterialDetailsScreen() {
               )}
             </View>
             <View style={styles.filesListContainer}>
-              <View 
+              <TouchableOpacity 
                 style={[
                   styles.fileItemCard,
                   downloadedFileUri && styles.fileItemCardDownloaded,
                 ]}
+                onPress={async () => {
+                  if (downloadedFileUri) {
+                    setActiveFileViewerUri(downloadedFileUri);
+                    setActiveFileViewerName(getLegacySingleFileViewerName());
+                    setShowFileViewer(true);
+                    return;
+                  }
+
+                  if (!netInfo?.isInternetReachable) {
+                    showToast('Offline: download requires internet. Tap ⋯ when online.', 'warning');
+                    return;
+                  }
+                  showToast('Not downloaded yet. Tap ⋯ for View Online / Download options.', 'info');
+                }}
+                disabled={!downloadedFileUri}
+                activeOpacity={0.85}
               >
                 <View style={[
                   styles.fileItemIcon,
@@ -2416,42 +2361,29 @@ export default function MaterialDetailsScreen() {
                 {/* Action Button */}
                 {isDownloading ? (
                   <ActivityIndicator size="small" color="#1967d2" style={styles.fileActionButton} />
-                ) : downloadedFileUri ? (
-                  <TouchableOpacity 
-                    style={styles.fileActionButton}
-                    onPress={() => {
-                      setActiveFileViewerUri(downloadedFileUri);
-                      setActiveFileViewerName(materialDetail.title || 'File');
-                      setShowFileViewer(true);
-                    }}
-                  >
-                    <Ionicons name="eye-outline" size={22} color="#16a34a" />
-                  </TouchableOpacity>
                 ) : (
                   <TouchableOpacity 
                     style={styles.fileActionButton}
-                    onPress={promptDownloadOptions}
-                    disabled={!netInfo?.isInternetReachable}
+                    onPress={(e: any) => {
+                      e?.stopPropagation?.();
+                      setShowActionSheet(true);
+                    }}
+                    disabled={isDownloading}
                   >
                     <Ionicons 
-                      name="download-outline" 
+                      name="ellipsis-horizontal" 
                       size={22} 
-                      color={netInfo?.isInternetReachable ? '#1967d2' : '#9aa0a6'} 
+                      color={downloadedFileUri ? '#16a34a' : (netInfo?.isInternetReachable ? '#1967d2' : '#9aa0a6')} 
                     />
                   </TouchableOpacity>
                 )}
-              </View>
+              </TouchableOpacity>
             </View>
           </View>
         )}
 
-        {/* YouTube-Style Preview Section for Legacy Single Files */}
-        {materialDetail.file_path && materialDetail.material_type?.toLowerCase() !== 'link' && (!materialDetail.files || materialDetail.files.length === 0) && (
-          renderInlineViewer()
-        )}
-
-        {/* Downloaded Files Carousel Section */}
-        {downloadedFiles.length > 0 && (
+        {/* Downloaded Files Carousel Section - Only show for multiple files */}
+        {downloadedFiles.length > 1 && (
           <View style={styles.sectionContainer}>
             <Text style={styles.sectionHeader}>
               <Ionicons name="download" size={18} color="#16a34a" /> Downloaded Files ({downloadedFiles.length})
@@ -2603,6 +2535,14 @@ export default function MaterialDetailsScreen() {
         isCached={!!downloadedFileUri}
         actions={[
           {
+            icon: 'eye-outline',
+            label: 'View Online',
+            subtitle: 'Preview inside the app (requires internet)',
+            onPress: viewLegacySingleOnline,
+            color: '#0ea5e9',
+            disabled: !netInfo?.isInternetReachable,
+          },
+          {
             icon: 'phone-portrait-outline',
             label: 'Save to App',
             subtitle: 'Access offline within the app',
@@ -2613,7 +2553,7 @@ export default function MaterialDetailsScreen() {
           {
             icon: 'folder-outline',
             label: 'Save to Device',
-            subtitle: 'Choose a folder on your device',
+            subtitle: 'Auto-save to Downloads folder',
             onPress: downloadToDeviceExternal,
             color: '#16a34a',
           },
@@ -2647,8 +2587,19 @@ export default function MaterialDetailsScreen() {
         fileName={selectedFileForAction?.file.original_name}
         fileSize={selectedFileForAction?.file.size ? formatBytes(selectedFileForAction.file.size) : undefined}
         fileType={detectFileType(selectedFileForAction?.file.original_name || '') || 'file'}
-        isCached={false}
+        isCached={!!downloadedFiles.find(d => d.materialFileIndex === selectedFileForAction?.index)}
         actions={[
+          {
+            icon: 'eye-outline',
+            label: 'View Online',
+            subtitle: 'Preview inside the app (requires internet)',
+            onPress: async () => {
+              if (!selectedFileForAction) return;
+              await viewOnlineFileFromList(selectedFileForAction.index, selectedFileForAction.file.original_name);
+            },
+            color: '#0ea5e9',
+            disabled: !netInfo?.isInternetReachable,
+          },
           {
             icon: 'phone-portrait-outline',
             label: 'Save to App',
@@ -2659,11 +2610,12 @@ export default function MaterialDetailsScreen() {
               }
             },
             color: '#1967d2',
+            disabled: !!downloadedFiles.find(d => d.materialFileIndex === selectedFileForAction?.index),
           },
           {
             icon: 'folder-outline',
             label: 'Save to Device',
-            subtitle: 'Save to Downloads folder',
+            subtitle: 'Auto-save to Downloads folder',
             onPress: () => {
               if (selectedFileForAction) {
                 downloadFileToDevice(selectedFileForAction.file, selectedFileForAction.index);
@@ -2671,6 +2623,31 @@ export default function MaterialDetailsScreen() {
             },
             color: '#16a34a',
           },
+          ...(downloadedFiles.find(d => d.materialFileIndex === selectedFileForAction?.index) ? [
+            {
+              icon: 'share-outline' as const,
+              label: 'Share File',
+              subtitle: 'Share with other apps',
+              onPress: async () => {
+                const downloadedFile = downloadedFiles.find(d => d.materialFileIndex === selectedFileForAction?.index);
+                if (downloadedFile && await Sharing.isAvailableAsync()) {
+                  await Sharing.shareAsync(downloadedFile.uri);
+                }
+              },
+              color: '#9333ea',
+            },
+            {
+              icon: 'trash-outline' as const,
+              label: 'Remove Download',
+              subtitle: 'Delete from app storage',
+              onPress: () => {
+                if (selectedFileForAction?.index !== undefined) {
+                  handleDeleteDownloadedFile(selectedFileForAction.index);
+                }
+              },
+              color: '#ef4444',
+            },
+          ] : []),
         ]}
       />
 
@@ -2722,7 +2699,7 @@ export default function MaterialDetailsScreen() {
               <FileViewer
                 uri={activeFileViewerUri}
                 fileName={activeFileViewerName}
-                isCached={true}
+                isCached={activeFileViewerUri.startsWith('file://')}
                 onClose={() => setShowFileViewer(false)}
                 fullscreen={true}
                 isOnline={netInfo?.isInternetReachable || false}
@@ -2731,6 +2708,44 @@ export default function MaterialDetailsScreen() {
           </View>
         </SafeAreaView>
       </Modal>
+
+      {/* Non-blocking toast */}
+      {toastMessage && (
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            styles.toastContainer,
+            {
+              bottom: Math.max(insets.bottom, 12) + 12,
+              opacity: toastAnim,
+              transform: [
+                {
+                  translateY: toastAnim.interpolate({
+                    inputRange: [0, 1],
+                    outputRange: [18, 0],
+                  }),
+                },
+              ],
+            },
+          ]}
+        >
+          <View
+            style={[
+              styles.toast,
+              toastVariant === 'warning' ? styles.toastWarning : styles.toastInfo,
+            ]}
+          >
+            <Ionicons
+              name={toastVariant === 'warning' ? 'alert-circle' : 'information-circle'}
+              size={18}
+              color="#fff"
+            />
+            <Text style={styles.toastText} numberOfLines={2}>
+              {toastMessage}
+            </Text>
+          </View>
+        </Animated.View>
+      )}
     </View>
   );
 }
@@ -2758,6 +2773,40 @@ const styles = StyleSheet.create({
     paddingBottom: 24,
     width: isTablet ? contentMaxWidth : '100%',
     alignSelf: 'center',
+  },
+
+  toastContainer: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    alignItems: 'center',
+  },
+  toast: {
+    width: '100%',
+    maxWidth: contentMaxWidth,
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.18,
+    shadowRadius: 12,
+    elevation: 6,
+  },
+  toastInfo: {
+    backgroundColor: '#111827',
+  },
+  toastWarning: {
+    backgroundColor: '#b45309',
+  },
+  toastText: {
+    flex: 1,
+    color: '#fff',
+    fontSize: isTablet ? 15 : 14,
+    fontWeight: '600',
   },
 
   headerContainer: {

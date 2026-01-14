@@ -3,20 +3,20 @@ import { Alert } from 'react-native';
 import { useNetworkStatus } from '../context/NetworkContext';
 import api, { getServerTime, getUserData, syncOfflineQuiz, syncOfflineSubmission } from '../lib/api';
 import {
-  clearManipulationFlag,
-  deleteCompletedOfflineQuizAttempt,
-  deleteOfflineSubmission,
-  downloadAllQuizQuestions,
-  getCompletedOfflineQuizzes,
-  getDb,
-  getUnsyncedSubmissions,
-  resetTimeCheckData,
-  saveAssessmentDetailsToDb,
-  saveAssessmentSyncTimestamp, // ADDED: Required to update local status after sync
-  saveCourseDetailsToDb,
-  saveServerTime,
-  syncAllAssessmentDetails,
-  updateOnlineSync
+    clearManipulationFlag,
+    deleteCompletedOfflineQuizAttempt,
+    deleteOfflineSubmission,
+    downloadAllQuizQuestions,
+    getCompletedOfflineQuizzes,
+    getDb,
+    getUnsyncedSubmissions,
+    resetTimeCheckData,
+    saveAssessmentDetailsToDb,
+    saveAssessmentSyncTimestamp, // ADDED: Required to update local status after sync
+    saveCourseDetailsToDb,
+    saveServerTime,
+    syncAllAssessmentDetails,
+    updateOnlineSync
 } from '../lib/localDb';
 
 // Type definitions
@@ -358,7 +358,7 @@ export const useNetworkSync = (onSyncStateChange?: (isSyncing: boolean) => void)
              // Add helpful advice based on error type
              let advice = "\n\n💡 Suggestions:\n- Check your Wi-Fi or data connection.\n- Restart the app if the issue persists.";
              if (uniqueErrors.some(e => e.includes('413') || e.includes('Large'))) {
-                advice = "\n\n💡 File size limit exceeded (Max 50MB). Please compress your file.";
+               advice = "\n\n💡 File size limit exceeded (Max 100MB). Please compress your file.";
              } else if (uniqueErrors.some(e => e.includes('timeout'))) {
                 advice = "\n\n💡 The request timed out. Your connection might be too slow.";
              }

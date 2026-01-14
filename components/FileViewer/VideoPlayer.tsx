@@ -14,14 +14,15 @@ import { Ionicons } from '@expo/vector-icons';
 import { AVPlaybackStatus, ResizeMode, Video } from 'expo-av';
 import React, { useEffect, useRef, useState } from 'react';
 import {
-    ActivityIndicator,
-    Dimensions,
-    Modal,
-    StatusBar,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View
+  ActivityIndicator,
+  Dimensions,
+  LayoutChangeEvent,
+  Modal,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View
 } from 'react-native';
 import { formatFileSize } from './utils';
 
@@ -75,6 +76,7 @@ export default function VideoPlayer({
   const [isBuffering, setIsBuffering] = useState(false);
   const [hasError, setHasError] = useState(false);
   const [isSeeking, setIsSeeking] = useState(false);
+  const [progressSliderWidth, setProgressSliderWidth] = useState(0);
   
   const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   
@@ -131,6 +133,10 @@ export default function VideoPlayer({
     }
   };
 
+  const handleProgressLayout = (e: LayoutChangeEvent) => {
+    setProgressSliderWidth(e.nativeEvent.layout.width);
+  };
+
   const skipForward = async () => {
     if (!videoRef.current || !isLoaded) return;
     const newPosition = Math.min(position + 10000, duration);
@@ -176,6 +182,12 @@ export default function VideoPlayer({
   };
 
   const renderControls = (isFullscreenMode: boolean = false) => (
+    (() => {
+      const progressPercent = duration > 0
+        ? Math.max(0, Math.min(100, (position / duration) * 100))
+        : 0;
+
+      return (
     <View style={[
       styles.controlsOverlay,
       isFullscreenMode && styles.fullscreenControlsOverlay,
@@ -229,9 +241,10 @@ export default function VideoPlayer({
           <TouchableOpacity
             style={styles.progressSlider}
             activeOpacity={1}
+            onLayout={handleProgressLayout}
             onPress={(e) => {
               const { locationX } = e.nativeEvent;
-              const sliderWidth = 200; // Approximate width
+              const sliderWidth = progressSliderWidth || 1;
               const newPosition = (locationX / sliderWidth) * duration;
               handleSeek(Math.max(0, Math.min(newPosition, duration)));
             }}
@@ -240,13 +253,13 @@ export default function VideoPlayer({
               <View 
                 style={[
                   styles.progressFill, 
-                  { width: `${(position / duration) * 100}%` }
+                  { width: `${progressPercent}%` }
                 ]} 
               />
               <View 
                 style={[
                   styles.progressThumb,
-                  { left: `${(position / duration) * 100}%` }
+                  { left: `${progressPercent}%` }
                 ]}
               />
             </View>
@@ -304,39 +317,75 @@ export default function VideoPlayer({
         </View>
       )}
     </View>
+      );
+    })()
   );
 
-  const renderVideo = (containerStyle: any, videoStyle: any, isFullscreenMode: boolean = false) => (
-    <TouchableOpacity 
-      style={containerStyle} 
-      activeOpacity={1}
-      onPress={toggleControls}
-    >
-      {hasError ? (
-        <View style={styles.errorContainer}>
-          <Ionicons name="videocam-off" size={64} color="#9ca3af" />
-          <Text style={styles.errorText}>Failed to load video</Text>
-          {!isCached && !isOnline && (
-            <Text style={styles.offlineHint}>Download for offline viewing</Text>
-          )}
+  const renderVideo = (containerStyle: any, videoStyle: any, isFullscreenMode: boolean = false) => {
+    // Check if we should show offline message
+    if (!isCached && !isOnline) {
+      return (
+        <View style={containerStyle}>
+          <View style={styles.errorContainer}>
+            <Ionicons name="cloud-offline" size={64} color="#9ca3af" />
+            <Text style={styles.errorText}>No Internet Connection</Text>
+            <Text style={styles.offlineHint}>Download this video for offline viewing</Text>
+            {onDownload && (
+              <TouchableOpacity style={styles.downloadButton} onPress={onDownload}>
+                <Ionicons name="download" size={20} color="#fff" />
+                <Text style={styles.downloadButtonText}>Download Video</Text>
+              </TouchableOpacity>
+            )}
+          </View>
         </View>
-      ) : (
-        <>
-          <Video
-            ref={videoRef}
-            source={{ uri }}
-            style={videoStyle}
-            resizeMode={ResizeMode.CONTAIN}
-            shouldPlay={false}
-            isLooping={false}
-            onPlaybackStatusUpdate={handlePlaybackStatusUpdate}
-            useNativeControls={false}
-          />
-          {renderControls(isFullscreenMode)}
-        </>
-      )}
-    </TouchableOpacity>
-  );
+      );
+    }
+
+    return (
+      <TouchableOpacity 
+        style={containerStyle} 
+        activeOpacity={1}
+        onPress={toggleControls}
+      >
+        {hasError ? (
+          <View style={styles.errorContainer}>
+            <Ionicons name="videocam-off" size={64} color="#9ca3af" />
+            <Text style={styles.errorText}>Failed to load video</Text>
+            <Text style={styles.offlineHint}>
+              {isCached 
+                ? 'This video file may be corrupted or in an unsupported format'
+                : 'Try downloading the video for offline viewing'
+              }
+            </Text>
+            {!isCached && onDownload && (
+              <TouchableOpacity style={styles.downloadButton} onPress={onDownload}>
+                <Ionicons name="download" size={18} color="#fff" />
+                <Text style={styles.downloadButtonText}>Download</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        ) : (
+          <>
+            <Video
+              ref={videoRef}
+              source={{ uri }}
+              style={videoStyle}
+              resizeMode={ResizeMode.CONTAIN}
+              shouldPlay={false}
+              isLooping={false}
+              onPlaybackStatusUpdate={handlePlaybackStatusUpdate}
+              useNativeControls={false}
+              onError={(error) => {
+                console.error('Video error:', error);
+                setHasError(true);
+              }}
+            />
+            {renderControls(isFullscreenMode)}
+          </>
+        )}
+      </TouchableOpacity>
+    );
+  };
 
   // Inline viewer
   const renderInlineViewer = () => (
@@ -636,12 +685,29 @@ const styles = StyleSheet.create({
     marginTop: 12,
     fontSize: 14,
     color: '#9ca3af',
+    textAlign: 'center',
   },
   offlineHint: {
     marginTop: 8,
     fontSize: 12,
     color: '#6b7280',
     fontStyle: 'italic',
+    textAlign: 'center',
+  },
+  downloadButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#ea4335',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 24,
+    marginTop: 16,
+  },
+  downloadButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#fff',
   },
   footer: {
     padding: 12,

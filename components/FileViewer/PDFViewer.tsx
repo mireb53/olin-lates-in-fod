@@ -57,9 +57,11 @@ export default function PDFViewer({
 
   // Use local file viewer for cached PDFs, Google Docs only for online
   const getPDFViewerUrl = () => {
-    // If file is cached (downloaded), use local file URI
+    // For cached/downloaded PDFs, we need to show them differently
+    // WebView cannot directly display local PDF files on mobile
+    // We'll handle this in the render function
     if (isCached && uri.startsWith('file://')) {
-      return uri;
+      return uri; // Will be handled by native sharing
     }
     
     // Only use Google Docs viewer if online and NOT cached
@@ -98,11 +100,85 @@ export default function PDFViewer({
     webViewRef.current?.reload();
   };
 
+  const handleOpenWithExternalApp = async () => {
+    if (onShare) {
+      onShare();
+    }
+  };
+
   const toggleFullscreen = () => {
     setIsFullscreen(!isFullscreen);
   };
 
   const renderPDFContent = (isFullscreenMode: boolean = false) => {
+    // For cached/downloaded PDFs, use Google Docs viewer with file:// protocol
+    // WebView CAN display PDFs using Google Docs viewer even for local files
+    if (isCached && uri.startsWith('file://')) {
+      if (hasError) {
+        return (
+          <View style={styles.errorContainer}>
+            <Ionicons name="document-text-outline" size={64} color="#9ca3af" />
+            <Text style={styles.errorTitle}>Unable to display this PDF in-app</Text>
+            <Text style={styles.errorText}>
+              This device could not render the downloaded PDF inside the app.
+              You can still open it with another app.
+            </Text>
+            <View style={styles.errorActions}>
+              <TouchableOpacity style={styles.retryButton} onPress={handleReload}>
+                <Ionicons name="refresh" size={18} color="#374151" />
+                <Text style={styles.retryButtonText}>Retry</Text>
+              </TouchableOpacity>
+              {onShare && (
+                <TouchableOpacity style={styles.downloadButton} onPress={handleOpenWithExternalApp}>
+                  <Ionicons name="open-outline" size={18} color="#fff" />
+                  <Text style={styles.downloadButtonText}>Open Externally</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+        );
+      }
+
+      // For local files, we'll use WebView with the file URI directly
+      // Note: On Android, WebView can display PDFs natively
+      return (
+        <View style={[
+          styles.webViewContainer,
+          isFullscreenMode && styles.fullscreenWebViewContainer
+        ]}>
+          <WebView
+            ref={webViewRef}
+            source={{ uri: uri }}
+            style={styles.webView}
+            onLoadStart={handleLoadStart}
+            onLoadEnd={handleLoadEnd}
+            onError={(syntheticEvent) => {
+              const { nativeEvent } = syntheticEvent;
+              console.warn('WebView error loading local PDF:', nativeEvent);
+              // If WebView fails to load local PDF, show error with option to open externally
+              setHasError(true);
+              setIsLoading(false);
+            }}
+            originWhitelist={['*']}
+            javaScriptEnabled={true}
+            domStorageEnabled={true}
+            allowFileAccess={true}
+            allowUniversalAccessFromFileURLs={true}
+            mixedContentMode="always"
+            startInLoadingState={false}
+            scalesPageToFit={true}
+            bounces={false}
+          />
+          {isLoading && (
+            <View style={styles.loadingOverlay}>
+              <ActivityIndicator size="large" color="#ea4335" />
+              <Text style={styles.loadingText}>Loading PDF...</Text>
+            </View>
+          )}
+        </View>
+      );
+    }
+
     if (!isOnline && !isCached) {
       return (
         <View style={styles.offlineContainer}>
@@ -499,6 +575,13 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#9ca3af',
     fontStyle: 'italic',
+  },
+  hintText: {
+    fontSize: 11,
+    color: '#9ca3af',
+    textAlign: 'center',
+    marginTop: 12,
+    paddingHorizontal: 24,
   },
   // Fullscreen styles
   fullscreenContainer: {

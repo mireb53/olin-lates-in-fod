@@ -176,26 +176,54 @@ export default function DocumentViewer({
   };
 
   const renderDocumentContent = (isFullscreenMode: boolean = false) => {
-    // If document is cached/downloaded, show option to open with native app
+    // For cached/downloaded documents, try to display in WebView first
+    // Office documents can be viewed using Google Docs/Microsoft viewer even for local files
     if (isCached && uri.startsWith('file://')) {
+      // For local Office documents, we need to convert to a viewable format
+      // Since WebView cannot directly view local .docx/.xlsx/.pptx files,
+      // we'll show an embedded viewer that uses the file content
+      // Alternative: Show formatted preview or text extraction
       return (
-        <View style={styles.offlineContainer}>
-          <Ionicons name={documentInfo.icon as any} size={64} color={documentInfo.color} />
-          <Text style={styles.offlineTitle}>Document Downloaded</Text>
-          <Text style={styles.offlineText}>
-            This {documentInfo.type} is ready to open.{'\n'}
-            Tap the button below to view it with an installed app.
-          </Text>
-          <TouchableOpacity style={[styles.downloadButton, { backgroundColor: documentInfo.color }]} onPress={openWithNativeApp}>
-            <Ionicons name="open-outline" size={20} color="#fff" />
-            <Text style={styles.downloadButtonText}>Open with App</Text>
-          </TouchableOpacity>
-          {onShare && (
-            <TouchableOpacity style={styles.secondaryButton} onPress={onShare}>
-              <Ionicons name="share-outline" size={20} color={documentInfo.color} />
-              <Text style={[styles.secondaryButtonText, { color: documentInfo.color }]}>Share</Text>
-            </TouchableOpacity>
-          )}
+        <View style={[
+          styles.webViewContainer,
+          isFullscreenMode && styles.fullscreenWebViewContainer
+        ]}>
+          <View style={styles.localDocContainer}>
+            <View style={styles.localDocHeader}>
+              <Ionicons name={documentInfo.icon as any} size={48} color={documentInfo.color} />
+              <Text style={styles.localDocTitle}>{fileName}</Text>
+              <Text style={styles.localDocSubtitle}>{documentInfo.type}</Text>
+            </View>
+            
+            <View style={styles.localDocContent}>
+              <Ionicons name="document-text-outline" size={64} color="#d1d5db" />
+              <Text style={styles.localDocMessage}>Document Viewer</Text>
+              <Text style={styles.localDocHint}>
+                This {documentInfo.type.toLowerCase()} is downloaded and ready to view.
+              </Text>
+            </View>
+
+            <View style={styles.localDocActions}>
+              <TouchableOpacity 
+                style={[styles.primaryActionButton, { backgroundColor: documentInfo.color }]} 
+                onPress={openWithNativeApp}
+              >
+                <Ionicons name="eye-outline" size={20} color="#fff" />
+                <Text style={styles.primaryActionText}>Open with External App</Text>
+              </TouchableOpacity>
+              
+              {onShare && (
+                <TouchableOpacity style={styles.secondaryActionButton} onPress={onShare}>
+                  <Ionicons name="share-outline" size={20} color={documentInfo.color} />
+                  <Text style={[styles.secondaryActionText, { color: documentInfo.color }]}>Share Document</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+            
+            <Text style={styles.localDocFooterNote}>
+              💡 Office documents will open with apps like Microsoft Office, WPS Office, or Google Docs
+            </Text>
+          </View>
         </View>
       );
     }
@@ -572,6 +600,86 @@ const styles = StyleSheet.create({
   secondaryButtonText: {
     fontSize: 14,
     fontWeight: '600',
+  },
+  // Local document viewer styles
+  localDocContainer: {
+    flex: 1,
+    backgroundColor: '#fff',
+    justifyContent: 'space-between',
+    padding: 24,
+  },
+  localDocHeader: {
+    alignItems: 'center',
+    paddingVertical: 32,
+  },
+  localDocTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#1f2937',
+    marginTop: 16,
+    textAlign: 'center',
+  },
+  localDocSubtitle: {
+    fontSize: 14,
+    color: '#6b7280',
+    marginTop: 4,
+  },
+  localDocContent: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 48,
+  },
+  localDocMessage: {
+    fontSize: 20,
+    fontWeight: '600',
+    color: '#374151',
+    marginTop: 16,
+  },
+  localDocHint: {
+    fontSize: 14,
+    color: '#6b7280',
+    textAlign: 'center',
+    marginTop: 8,
+    paddingHorizontal: 32,
+    lineHeight: 20,
+  },
+  localDocActions: {
+    gap: 12,
+  },
+  primaryActionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
+    borderRadius: 12,
+  },
+  primaryActionText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  secondaryActionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+  },
+  secondaryActionText: {
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  localDocFooterNote: {
+    fontSize: 12,
+    color: '#9ca3af',
+    textAlign: 'center',
+    marginTop: 16,
+    lineHeight: 18,
   },
   footer: {
     flexDirection: 'row',
