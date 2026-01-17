@@ -61,7 +61,7 @@ interface EnrolledCourse extends Course {
 }
 
 // 1. UPDATED TUTORIAL STEPS ARRAY
-const tutorialSteps = [
+const tutorialSteps: Array<{ image: any; title: string; text: string; icon?: string }> = [
   {
     image: require('@/assets/images/dashboard.jpg'),
     title: 'Welcome to Your Dashboard!',
@@ -237,7 +237,7 @@ useEffect(() => {
     updateStats();
 
     if (netInfo?.isInternetReachable) {
-      intervalId = setInterval(updateStats, 3000);
+      intervalId = setInterval(updateStats, 3000) as unknown as NodeJS.Timeout;
     }
 
     return () => {
@@ -826,7 +826,7 @@ useEffect(() => {
             const chunk = courses.slice(i, i + chunkSize);
             setSyncStatus(`Saving courses ${i + 1}-${Math.min(i + chunkSize, courses.length)} of ${courses.length}`);
             
-            await Promise.all(chunk.map(async (course) => {
+            await Promise.all(chunk.map(async (course: Course) => {
               try {
                 await saveCourseToDb(course, userData.email);
               } catch (saveError) {
@@ -1415,7 +1415,7 @@ useEffect(() => {
                   ) : (
                     <View style={styles.noResultsContainer}>
                       <Ionicons name="search-outline" size={48} color="#ccc" />
-                      <Text style={styles.noResultsText}>No courses found for "{searchQuery}"</Text>
+                      <Text style={styles.noResultsText}>No courses found for {searchQuery}</Text>
                       <Text style={[styles.noResultsText, { fontSize: 12, marginTop: 8 }]}>
                         Try searching with a different course title or code
                       </Text>
