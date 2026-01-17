@@ -6,24 +6,31 @@ import { Stack, useLocalSearchParams } from 'expo-router';
 import * as Sharing from 'expo-sharing';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
-  Alert,
-  Animated,
-  Dimensions,
-  Image,
-  Linking,
-  Modal,
-  Platform,
-  RefreshControl,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
+    ActivityIndicator,
+    Alert,
+    Animated,
+    Dimensions,
+    Image,
+    Linking,
+    Modal,
+    Platform,
+    RefreshControl,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { getCompletedOfflineQuizzes, getMaterialDetailsFromDb, getUnsyncedSubmissions } from '@/lib/localDb';
+import { getOfflineOpenPolicy } from '@/lib/fileOpenPolicy';
+import {
+    getCompletedOfflineQuizzes,
+    getMaterialDetailsFromDb,
+    getMaterialFullDetailsFromDb,
+    getUnsyncedSubmissions,
+    saveMaterialFullDetailsToDb,
+} from '@/lib/localDb';
 import { syncAllOfflineData } from '@/lib/offlineSync';
 import * as IntentLauncher from 'expo-intent-launcher';
 import FileViewer, { detectFileType } from '../../../../components/FileViewer';
@@ -330,11 +337,13 @@ export default function MaterialDetailsScreen() {
   const [videoLoaded, setVideoLoaded] = useState(false);
 
   // New UI states
+
   const [showActionSheet, setShowActionSheet] = useState(false);
   const [showDownloadOverlay, setShowDownloadOverlay] = useState(false);
   const [downloadStatus, setDownloadStatus] = useState<'downloading' | 'processing' | 'complete' | 'error'>('downloading');
   const [downloadedBytes, setDownloadedBytes] = useState(0);
   const [totalBytes, setTotalBytes] = useState(0);
+  // Removed unused online preview states: onlinePreviewUri, isLoadingPreview, previewFailed, showFallback, imageError, imageLoaded, videoLoaded
 
   // State for multiple downloaded files
   const [downloadedFiles, setDownloadedFiles] = useState<DownloadedFileInfo[]>([]);
@@ -666,15 +675,15 @@ export default function MaterialDetailsScreen() {
           const material = response.data.material;
           setMaterialDetail(material);
 
+          // Cache full material details for offline viewing (keeps files/links visible offline)
+          await saveMaterialFullDetailsToDb(Number(materialId), userEmail, material);
+
           if (material.formatted_file_size) {
             setFileSize(material.formatted_file_size);
           }
           
           if (material.file_path) {
-            const isDownloaded = await checkIfFileDownloaded(material);
-            if (!isDownloaded && material.material_type?.toLowerCase() !== 'link') {
-              await fetchOnlinePreview(material); // ADD await here
-            }
+            await checkIfFileDownloaded(material);
           }
         } else {
           const errorMessage = response.data?.message || 'Failed to fetch material details.';
@@ -682,20 +691,20 @@ export default function MaterialDetailsScreen() {
         }
       } else {
         const offlineMaterial = await getMaterialDetailsFromDb(Number(materialId), userEmail);
-        if (offlineMaterial) {
-          // Avoid wiping rich online state (files/links) when offline DB has only partial fields
-          setMaterialDetail((prev: any) => {
-            const prevDetail = prev as MaterialDetail | null;
-            const incoming = offlineMaterial as MaterialDetail;
-            return {
-              ...(prevDetail || {}),
-              ...incoming,
-              files: incoming.files ?? prevDetail?.files,
-              links: incoming.links ?? prevDetail?.links,
-            };
-          });
-          if (offlineMaterial.file_path) {
-            await checkIfFileDownloaded(offlineMaterial);
+        const fullOfflineMaterial = await getMaterialFullDetailsFromDb(Number(materialId), userEmail);
+
+        const merged = {
+          ...(offlineMaterial || {}),
+          ...(fullOfflineMaterial || {}),
+          // prefer fullOfflineMaterial for rich arrays
+          files: (fullOfflineMaterial as any)?.files ?? (offlineMaterial as any)?.files,
+          links: (fullOfflineMaterial as any)?.links ?? (offlineMaterial as any)?.links,
+        } as MaterialDetail;
+
+        if (offlineMaterial || fullOfflineMaterial) {
+          setMaterialDetail(merged);
+          if (merged.file_path) {
+            await checkIfFileDownloaded(merged);
           }
         } else {
           setError('Offline: Material details not available locally.');
@@ -905,7 +914,12 @@ export default function MaterialDetailsScreen() {
     // Check if file is already downloaded
     const existingDownload = downloadedFiles.find(d => d.materialFileIndex === fileIndex);
     if (existingDownload) {
-      // Open in FileViewer directly
+      // Office formats: open externally
+      if (isOfficeExtension(file.extension) || isOfficeFileName(existingDownload.fileName)) {
+        openLocalFileInAnotherApp(existingDownload.uri, existingDownload.fileName);
+        return;
+      }
+
       setActiveFileViewerUri(existingDownload.uri);
       setActiveFileViewerName(existingDownload.fileName);
       setShowFileViewer(true);
@@ -917,11 +931,16 @@ export default function MaterialDetailsScreen() {
       return;
     }
 
-    showToast('Not downloaded yet. Tap ⋯ for View Online / Download options.', 'info');
+    setSelectedFileForAction({ file, index: fileIndex });
+    setShowFileActionSheet(true);
   };
 
   // Download file to app storage (from files list)
-  const downloadFileToApp = async (file: MaterialFile, fileIndex: number) => {
+  const downloadFileToApp = async (
+    file: MaterialFile,
+    fileIndex: number,
+    opts?: { afterDownload?: 'view' | 'external' }
+  ) => {
     setShowFileActionSheet(false);
     setCurrentDownloadingFileIndex(fileIndex);
     setIsDownloading(true);
@@ -998,6 +1017,14 @@ export default function MaterialDetailsScreen() {
           
           setDownloadedFiles(prev => [...prev, newDownloadedFile]);
           setDownloadStatus('complete');
+
+          if (opts?.afterDownload === 'external') {
+            await openLocalFileInAnotherApp(result.uri, file.original_name);
+          } else if (opts?.afterDownload === 'view') {
+            setActiveFileViewerUri(result.uri);
+            setActiveFileViewerName(file.original_name);
+            setShowFileViewer(true);
+          }
           
           console.log('File downloaded to app:', result.uri);
           
@@ -1021,6 +1048,44 @@ export default function MaterialDetailsScreen() {
       setIsDownloading(false);
       setDownloadProgress(0);
       setCurrentDownloadingFileIndex(null);
+    }
+  };
+
+  const saveFileToDeviceAndroid = async (sourceFileUri: string, targetFileName: string, mimeType: string) => {
+    const permissions = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+    if (!permissions.granted) {
+      throw new Error('Save cancelled.');
+    }
+
+    const directoryUri = permissions.directoryUri;
+    const destUri = await FileSystem.StorageAccessFramework.createFileAsync(directoryUri, targetFileName, mimeType);
+    const base64 = await FileSystem.readAsStringAsync(sourceFileUri, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    await FileSystem.StorageAccessFramework.writeAsStringAsync(destUri, base64, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+  };
+
+  const exportLocalFileToDevice = async (localUri: string, suggestedFileName: string) => {
+    if (!localUri) return;
+    try {
+      if (Platform.OS === 'android') {
+        await saveFileToDeviceAndroid(localUri, suggestedFileName, getMimeType(suggestedFileName));
+        Alert.alert('Saved', 'File saved to your selected folder.');
+        return;
+      }
+
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(localUri, {
+          dialogTitle: 'Save file',
+          mimeType: getMimeType(suggestedFileName),
+        });
+      } else {
+        Alert.alert('Error', 'Sharing is not available on this device.');
+      }
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'Failed to save file.');
     }
   };
 
@@ -1221,6 +1286,7 @@ export default function MaterialDetailsScreen() {
   };
 
   // Legacy function for single file download - kept for backward compatibility
+
   const handleOpenFileFromList = async (file: MaterialFile, fileIndex: number) => {
     handleFileCardPress(file, fileIndex);
   };
@@ -1231,36 +1297,27 @@ export default function MaterialDetailsScreen() {
       return;
     }
 
-    // Show the beautiful action sheet instead of Alert
     setShowActionSheet(true);
   };
-
-  const viewLegacySingleOnline = async () => {
-    const name = getLegacySingleFileViewerName();
-    await tempDownloadAndOpenInViewer({ fileName: name });
-  };
-
-  const viewOnlineFileFromList = async (fileIndex: number, fileName: string) => {
-    await tempDownloadAndOpenInViewer({ fileIndex, fileName });
-  };
+  // Removed viewLegacySingleOnline and viewOnlineFileFromList (dead code)
 
   const openFileOptionsForListItem = (file: MaterialFile, index: number) => {
     setSelectedFileForAction({ file, index });
     setShowFileActionSheet(true);
   };
 
-  const downloadToAppStorage = async () => {
+  const downloadToAppStorage = async (): Promise<string | null> => {
     if (!materialDetail?.file_path || !materialDetail?.id) {
       console.log('Download cancelled: Missing file_path or id');
-      return;
+      return null;
     }
     if (!netInfo?.isInternetReachable) {
       Alert.alert('Offline Mode', 'File downloading requires an internet connection.');
-      return;
+      return null;
     }
     if (downloadedFileUri) {
       console.log('Download cancelled: File already downloaded');
-      return;
+      return downloadedFileUri;
     }
 
     // Close action sheet first
@@ -1344,6 +1401,8 @@ export default function MaterialDetailsScreen() {
           setTimeout(() => {
             setShowDownloadOverlay(false);
           }, 1500);
+
+          return result.uri;
         } else {
           throw new Error('Downloaded file is corrupted or empty.');
         }
@@ -1360,6 +1419,7 @@ export default function MaterialDetailsScreen() {
           err?.message || 'Could not download the file. Please try again.'
         );
       }, 2000);
+      return null;
     } finally {
       setIsDownloading(false);
       setDownloadProgress(0);
@@ -1508,18 +1568,7 @@ export default function MaterialDetailsScreen() {
     }
   }, [downloadedFileUri, materialDetail]);
 
-  useEffect(() => {
-    if (previewFailed) {
-      // Show a brief delay before showing the fallback
-      const timer = setTimeout(() => {
-        setShowFallback(true);
-      }, 800); // 800ms delay - feels natural without being too slow
-
-      return () => clearTimeout(timer);
-    } else {
-      setShowFallback(false);
-    }
-  }, [previewFailed]);
+  // Removed previewFailed/showFallback effect (dead code)
 
   const handleOpenFile = async () => {
     if (!downloadedFileUri) return;
@@ -2633,12 +2682,13 @@ export default function MaterialDetailsScreen() {
                   }
 
                   if (!netInfo?.isInternetReachable) {
-                    showToast('Offline: download requires internet. Tap ⋯ when online.', 'warning');
+                    showToast('Offline: you need internet to download.', 'warning');
                     return;
                   }
-                  showToast('Not downloaded yet. Tap ⋯ for View Online / Download options.', 'info');
+
+                  setShowActionSheet(true);
                 }}
-                disabled={!downloadedFileUri}
+                disabled={false}
                 activeOpacity={0.85}
               >
                 <View style={[
@@ -2866,20 +2916,32 @@ export default function MaterialDetailsScreen() {
         fileType={getFileType(materialDetail?.file_path || '') as any}
         isCached={!!downloadedFileUri}
         actions={[
-          ...((getFileType(materialDetail?.file_path || '') as any) === 'audio'
-            ? []
-            : [
-                {
-                  icon: 'eye-outline' as const,
-                  label: isOfficeFileName(materialDetail?.file_path || '') ? 'Open Online' : 'View Online',
-                  subtitle: isOfficeFileName(materialDetail?.file_path || '')
-                    ? 'Downloads then opens in another app'
-                    : 'Preview inside the app (requires internet)',
-                  onPress: viewLegacySingleOnline,
-                  color: '#0ea5e9',
-                  disabled: !netInfo?.isInternetReachable,
-                },
-              ]),
+          ...(!downloadedFileUri
+            ? [
+                (() => {
+                  const name = getLegacySingleFileViewerName();
+                  const policy = getOfflineOpenPolicy({ fileName: name });
+                  const openExternally = isOfficeFileName(materialDetail?.file_path || '') || policy.prefersExternal;
+                  return {
+                    icon: (openExternally ? 'open-outline' : 'eye-outline') as const,
+                    label: openExternally ? 'Download & Open in Another App' : 'Download & View in App',
+                    subtitle: policy.subtitle,
+                    onPress: async () => {
+                      const local = await downloadToAppStorage();
+                      if (openExternally && local) {
+                        await openLocalFileInAnotherApp(local, name);
+                      } else if (local) {
+                        setActiveFileViewerUri(local);
+                        setActiveFileViewerName(name);
+                        setShowFileViewer(true);
+                      }
+                    },
+                    color: openExternally ? '#4285f4' : '#16a34a',
+                    disabled: !netInfo?.isInternetReachable,
+                  };
+                })(),
+              ]
+            : []),
           {
             icon: 'phone-portrait-outline',
             label: 'Save to App',
@@ -2892,7 +2954,14 @@ export default function MaterialDetailsScreen() {
             icon: 'folder-outline',
             label: 'Save to Device',
             subtitle: Platform.OS === 'android' ? 'Choose Downloads/Documents folder' : 'Export using share sheet',
-            onPress: downloadToDeviceExternal,
+            onPress: async () => {
+              const name = getLegacySingleFileViewerName();
+              if (downloadedFileUri) {
+                await exportLocalFileToDevice(downloadedFileUri, name);
+                return;
+              }
+              await downloadToDeviceExternal();
+            },
             color: '#16a34a',
           },
           ...(downloadedFileUri ? [{
@@ -2927,48 +2996,87 @@ export default function MaterialDetailsScreen() {
         fileType={detectFileType(selectedFileForAction?.file.original_name || '') || 'file'}
         isCached={!!downloadedFiles.find(d => d.materialFileIndex === selectedFileForAction?.index)}
         actions={[
-          ...((detectFileType(selectedFileForAction?.file.original_name || '') || '') === 'audio'
-            ? []
-            : [
+          ...(selectedFileForAction
+            ? [
+                (() => {
+                  const df = downloadedFiles.find((d) => d.materialFileIndex === selectedFileForAction.index);
+                  const policy = getOfflineOpenPolicy({
+                    fileName: selectedFileForAction.file.original_name,
+                    fileSizeBytes: selectedFileForAction.file.size,
+                  });
+                  const isDownloaded = !!df;
+                  const shouldExternal = isOfficeExtension(selectedFileForAction.file.extension) || policy.prefersExternal;
+
+                  if (isDownloaded && df) {
+                    return {
+                      icon: (shouldExternal ? 'open-outline' : 'eye-outline') as const,
+                      label: shouldExternal ? 'Open in Another App' : 'Open in App',
+                      subtitle: shouldExternal ? 'Open using another app' : 'Open inside the app',
+                      onPress: async () => {
+                        if (shouldExternal) {
+                          await openLocalFileInAnotherApp(df.uri, df.fileName);
+                        } else {
+                          setActiveFileViewerUri(df.uri);
+                          setActiveFileViewerName(df.fileName);
+                          setShowFileViewer(true);
+                        }
+                      },
+                      color: shouldExternal ? '#4285f4' : '#16a34a',
+                      disabled: false,
+                    };
+                  }
+
+                  return {
+                    icon: (shouldExternal ? 'open-outline' : 'eye-outline') as const,
+                    label: shouldExternal ? 'Download & Open in Another App' : 'Download & View in App',
+                    subtitle: policy.subtitle,
+                    onPress: () => {
+                      if (!netInfo?.isInternetReachable) {
+                        showToast('Internet required to download.', 'warning');
+                        return;
+                      }
+                      downloadFileToApp(selectedFileForAction.file, selectedFileForAction.index, {
+                        afterDownload: shouldExternal ? 'external' : 'view',
+                      });
+                    },
+                    color: shouldExternal ? '#4285f4' : '#16a34a',
+                    disabled: !netInfo?.isInternetReachable,
+                  };
+                })(),
                 {
-                  icon: 'eye-outline' as const,
-                  label: isOfficeExtension(selectedFileForAction?.file.extension) || isOfficeFileName(selectedFileForAction?.file.original_name || '')
-                    ? 'Open Online'
-                    : 'View Online',
-                  subtitle: isOfficeExtension(selectedFileForAction?.file.extension) || isOfficeFileName(selectedFileForAction?.file.original_name || '')
-                    ? 'Downloads then opens in another app'
-                    : 'Preview inside the app (requires internet)',
-                  onPress: async () => {
-                    if (!selectedFileForAction) return;
-                    await viewOnlineFileFromList(selectedFileForAction.index, selectedFileForAction.file.original_name);
+                  icon: 'phone-portrait-outline' as const,
+                  label: 'Save to App',
+                  subtitle: 'Download for offline access',
+                  onPress: () => {
+                    if (!netInfo?.isInternetReachable) {
+                      showToast('Internet required to download.', 'warning');
+                      return;
+                    }
+                    downloadFileToApp(selectedFileForAction.file, selectedFileForAction.index);
                   },
-                  color: '#0ea5e9',
-                  disabled: !netInfo?.isInternetReachable,
+                  color: '#1967d2',
+                  disabled: !!downloadedFiles.find((d) => d.materialFileIndex === selectedFileForAction.index) || !netInfo?.isInternetReachable,
                 },
-              ]),
-          {
-            icon: 'phone-portrait-outline',
-            label: 'Save to App',
-            subtitle: 'Access offline within the app',
-            onPress: () => {
-              if (selectedFileForAction) {
-                downloadFileToApp(selectedFileForAction.file, selectedFileForAction.index);
-              }
-            },
-            color: '#1967d2',
-            disabled: !!downloadedFiles.find(d => d.materialFileIndex === selectedFileForAction?.index),
-          },
-          {
-            icon: 'folder-outline',
-            label: 'Save to Device',
-            subtitle: Platform.OS === 'android' ? 'Choose Downloads/Documents folder' : 'Export using share sheet',
-            onPress: () => {
-              if (selectedFileForAction) {
-                downloadFileToDevice(selectedFileForAction.file, selectedFileForAction.index);
-              }
-            },
-            color: '#16a34a',
-          },
+                {
+                  icon: 'folder-outline' as const,
+                  label: 'Save to Device',
+                  subtitle: Platform.OS === 'android' ? 'Choose Downloads/Documents folder' : 'Export using share sheet',
+                  onPress: async () => {
+                    const df = downloadedFiles.find((d) => d.materialFileIndex === selectedFileForAction.index);
+                    if (df) {
+                      await exportLocalFileToDevice(df.uri, df.fileName);
+                      return;
+                    }
+                    if (!netInfo?.isInternetReachable) {
+                      showToast('Internet required to download.', 'warning');
+                      return;
+                    }
+                    downloadFileToDevice(selectedFileForAction.file, selectedFileForAction.index);
+                  },
+                  color: '#16a34a',
+                },
+              ]
+            : []),
           ...(downloadedFiles.find(d => d.materialFileIndex === selectedFileForAction?.index) ? [
             {
               icon: 'share-outline' as const,
@@ -4117,6 +4225,7 @@ const styles = StyleSheet.create({
   downloadPromptProgressText: {
     fontSize: 14,
     color: '#1967d2',
+
     fontWeight: '500',
   },
 });
