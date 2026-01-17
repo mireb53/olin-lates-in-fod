@@ -4,26 +4,26 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
-  Alert,
-  Dimensions,
-  FlatList,
-  Modal,
-  RefreshControl,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View
+    ActivityIndicator,
+    Alert,
+    Dimensions,
+    FlatList,
+    Modal,
+    RefreshControl,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View
 } from 'react-native';
 import { useNetworkStatus } from '../../../context/NetworkContext';
 import api, { getUserData } from '../../../lib/api';
 import {
-  deleteCourseAndRelatedDataFromDb,
-  getCompletedOfflineQuizzes,
-  getEnrolledCoursesFromDb, // Keep this import
-  getUnsyncedSubmissions,
-  initDb,
-  saveCourseToDb
+    deleteCourseAndRelatedDataFromDb,
+    getCompletedOfflineQuizzes,
+    getEnrolledCoursesFromDb, // Keep this import
+    getUnsyncedSubmissions,
+    initDb,
+    saveCourseToDb
 } from '../../../lib/localDb';
 
 const { width } = Dimensions.get('window');
@@ -42,7 +42,7 @@ interface Course {
   instructor: {
     id: number;
     name: string;
-  };
+  } | null;
   status: string;
 }
 
@@ -229,14 +229,14 @@ export default function CoursesScreen() {
         hasNavigatedToCourseRef.current = true;
         console.log(`Navigating to course ${courseIdToNavigate} from deep link.`);
         router.push({
-          pathname: `/courses/${courseIdToNavigate}`,
+          pathname: `/courses/${courseIdToNavigate.toString()}` as any,
           params: { course: JSON.stringify(targetCourse) },
         });
         setTimeout(() => {
           if (router.setParams) {
             router.setParams({ courseId: undefined });
           }
-        }, 500);
+        }, 500 as unknown as number); // Fix: TS expects Timeout, but number is fine in browser/React Native
       } else {
         console.warn(`Deep link to course ID ${courseIdToNavigate} failed: Course not found in user's enrolled list.`);
       }
@@ -385,7 +385,7 @@ export default function CoursesScreen() {
           style={styles.courseCard}
           onPress={() => {
             console.log('Navigating to course:', item.title);
-            router.push({ pathname: `/courses/${item.id}`, params: { course: JSON.stringify(item) } });
+            router.push({ pathname: `/courses/${item.id.toString()}` as any, params: { course: JSON.stringify(item) } });
           }}
           activeOpacity={0.7}
         >
@@ -492,7 +492,7 @@ export default function CoursesScreen() {
           <Ionicons name="school-outline" size={80} color="#dadce0" />
           <Text style={styles.emptyStateTitle}>No courses yet</Text>
           <Text style={styles.emptyStateText}>
-            You haven't enrolled in any courses.
+            You have not enrolled in any courses.
           </Text>
           <Text style={styles.emptyStateText}>
             Visit the home screen to search and enroll!
