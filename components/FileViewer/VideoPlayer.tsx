@@ -14,15 +14,15 @@ import { Ionicons } from '@expo/vector-icons';
 import { AVPlaybackStatus, ResizeMode, Video } from 'expo-av';
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
-  Dimensions,
-  LayoutChangeEvent,
-  Modal,
-  StatusBar,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View
+    ActivityIndicator,
+    Dimensions,
+    LayoutChangeEvent,
+    Modal,
+    StatusBar,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View
 } from 'react-native';
 import { formatFileSize } from './utils';
 
@@ -79,6 +79,8 @@ export default function VideoPlayer({
   const [progressSliderWidth, setProgressSliderWidth] = useState(0);
   
   const controlsTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const isLocal = isCached || uri.startsWith('file://');
   
   // Extract status values
   const isLoaded = status?.isLoaded ?? false;
@@ -322,18 +324,18 @@ export default function VideoPlayer({
   );
 
   const renderVideo = (containerStyle: any, videoStyle: any, isFullscreenMode: boolean = false) => {
-    // Check if we should show offline message
-    if (!isCached && !isOnline) {
+    // Download-first: do not stream remote videos in-app
+    if (!isLocal) {
       return (
         <View style={containerStyle}>
           <View style={styles.errorContainer}>
-            <Ionicons name="cloud-offline" size={64} color="#9ca3af" />
-            <Text style={styles.errorText}>No Internet Connection</Text>
-            <Text style={styles.offlineHint}>Download this video for offline viewing</Text>
+            <Ionicons name="download-outline" size={64} color="#9ca3af" />
+            <Text style={styles.errorText}>Download required</Text>
+            <Text style={styles.offlineHint}>Download this video to play it in the app.</Text>
             {onDownload && (
               <TouchableOpacity style={styles.downloadButton} onPress={onDownload}>
                 <Ionicons name="download" size={20} color="#fff" />
-                <Text style={styles.downloadButtonText}>Download Video</Text>
+                <Text style={styles.downloadButtonText}>Download</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -352,12 +354,9 @@ export default function VideoPlayer({
             <Ionicons name="videocam-off" size={64} color="#9ca3af" />
             <Text style={styles.errorText}>Failed to load video</Text>
             <Text style={styles.offlineHint}>
-              {isCached 
-                ? 'This video file may be corrupted or in an unsupported format'
-                : 'Try downloading the video for offline viewing'
-              }
+              This video file may be corrupted or in an unsupported format
             </Text>
-            {!isCached && onDownload && (
+            {!isLocal && onDownload && (
               <TouchableOpacity style={styles.downloadButton} onPress={onDownload}>
                 <Ionicons name="download" size={18} color="#fff" />
                 <Text style={styles.downloadButtonText}>Download</Text>
@@ -397,7 +396,7 @@ export default function VideoPlayer({
           <Text style={styles.headerTitle} numberOfLines={1}>{fileName}</Text>
         </View>
         <View style={styles.headerActions}>
-          {onDownload && !isCached && (
+          {onDownload && !isLocal && (
             <TouchableOpacity style={styles.headerButton} onPress={onDownload}>
               <Ionicons name="download-outline" size={20} color="#4b5563" />
             </TouchableOpacity>
@@ -411,15 +410,15 @@ export default function VideoPlayer({
       {/* Footer */}
       <View style={styles.footer}>
         <View style={styles.footerInfo}>
-          {isCached ? (
+          {isLocal ? (
             <View style={styles.cachedBadge}>
               <Ionicons name="checkmark-circle" size={14} color="#16a34a" />
               <Text style={styles.cachedText}>Available offline</Text>
             </View>
           ) : (
             <View style={styles.onlineBadge}>
-              <Ionicons name="cloud" size={14} color="#1967d2" />
-              <Text style={styles.onlineText}>Streaming online</Text>
+              <Ionicons name="download-outline" size={14} color="#6b7280" />
+              <Text style={styles.onlineText}>Download required</Text>
             </View>
           )}
           {fileSize && (
