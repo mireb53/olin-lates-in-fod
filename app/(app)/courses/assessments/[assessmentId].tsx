@@ -8,18 +8,18 @@ import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import * as Sharing from 'expo-sharing';
 import React, { useCallback, useState } from 'react';
 import {
-  ActivityIndicator,
-  Alert,
-  Dimensions,
-  Linking,
-  Modal,
-  Platform,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View
+    ActivityIndicator,
+    Alert,
+    Dimensions,
+    Linking,
+    Modal,
+    Platform,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -36,24 +36,27 @@ const isLargeTablet = screenWidth >= 1024;
 const contentMaxWidth = isLargeTablet ? 900 : isTablet ? 700 : screenWidth;
 
 import { usePendingSyncNotification } from '@/hooks/usePendingSyncNotification';
+import { getOfflineOpenPolicy } from '@/lib/fileOpenPolicy';
 import { useNetworkStatus } from '../../../../context/NetworkContext';
 import api, { getUserData } from '../../../../lib/api';
 import {
-  checkIfAssessmentNeedsDetails,
-  deleteOfflineQuizAttempt,
-  getAssessmentDetailsFromDb,
-  getCompletedOfflineQuizzes,
-  getCurrentServerTime,
-  getOfflineAttemptCount,
-  getOfflineQuizAttempt,
-  getQuizQuestionsFromDb, // ADDED: Required for shuffling questions before start
-  getUnsyncedSubmissions,
-  hasAssessmentReviewSaved,
-  saveAssessmentDetailsToDb,
-  saveAssessmentReviewToDb,
-  saveAssessmentsToDb,
-  saveOfflineSubmission,
-  startOfflineQuiz
+    checkIfAssessmentNeedsDetails,
+    deleteOfflineQuizAttempt,
+    getAssessmentDetailsFromDb,
+    getAssessmentFullDetailsFromDb,
+    getCompletedOfflineQuizzes,
+    getCurrentServerTime,
+    getOfflineAttemptCount,
+    getOfflineQuizAttempt,
+    getQuizQuestionsFromDb, // ADDED: Required for shuffling questions before start
+    getUnsyncedSubmissions,
+    hasAssessmentReviewSaved,
+    saveAssessmentDetailsToDb,
+    saveAssessmentFullDetailsToDb,
+    saveAssessmentReviewToDb,
+    saveAssessmentsToDb,
+    saveOfflineSubmission,
+    startOfflineQuiz
 } from '../../../../lib/localDb';
 
 // File item in the files array (for assessments)
@@ -508,7 +511,11 @@ export default function AssessmentDetailsScreen() {
   };
 
   // Download file to app storage (from files list)
-  const downloadFileToApp = async (file: AssessmentFile, fileIndex: number) => {
+  const downloadFileToApp = async (
+    file: AssessmentFile,
+    fileIndex: number,
+    opts?: { afterDownload?: 'view' | 'external' }
+  ) => {
     setShowFileActionSheet(false);
     setCurrentDownloadingFileIndex(fileIndex);
     setIsDownloading(true);
@@ -559,6 +566,14 @@ export default function AssessmentDetailsScreen() {
           
           setDownloadedFiles(prev => [...prev, newDownloadedFile]);
           setDownloadStatus('complete');
+
+          if (opts?.afterDownload === 'external') {
+            await openLocalFileInAnotherApp(result.uri);
+          } else if (opts?.afterDownload === 'view') {
+            setActiveFileViewerUri(result.uri);
+            setActiveFileViewerName(file.original_name);
+            setShowFileViewer(true);
+          }
           
           console.log('File downloaded to app:', result.uri);
           
@@ -793,14 +808,14 @@ export default function AssessmentDetailsScreen() {
     setShowInstructionsActionSheet(true);
   };
 
-  const downloadToAppStorage = async () => {
+  const downloadToAppStorage = async (): Promise<string | null> => {
     if (!assessmentDetail?.assessment_file_url || !assessmentDetail?.id) {
       console.log('Download cancelled: Missing assessment_file_url or id');
-      return;
+      return null;
     }
     if (downloadedFileUri) {
       console.log('Download cancelled: File already downloaded');
-      return;
+      return downloadedFileUri;
     }
 
     setShowInstructionsActionSheet(false);
@@ -843,6 +858,8 @@ export default function AssessmentDetailsScreen() {
           setDownloadDate(modTime);
           console.log('Download complete:', result.uri);
           Alert.alert('Download Complete!', 'Instructions available for offline viewing.');
+
+          return result.uri;
         } else {
           throw new Error('Downloaded file is corrupted or empty.');
         }
@@ -855,6 +872,7 @@ export default function AssessmentDetailsScreen() {
         'Download Failed', 
         err?.message || 'Could not download the file. Please try again.'
       );
+      return null;
     } finally {
       setIsDownloading(false);
     }
@@ -1089,6 +1107,7 @@ export default function AssessmentDetailsScreen() {
         const validCourseId = courseId ? (typeof courseId === 'string' ? parseInt(courseId, 10) : Number(courseId)) : fetchedAssessment.course_id;
         await saveAssessmentsToDb([fetchedAssessment], validCourseId, userEmail);
         await saveAssessmentDetailsToDb(fetchedAssessment.id, userEmail, newAttemptStatus, newLatestSubmission);
+        await saveAssessmentFullDetailsToDb(fetchedAssessment.id, userEmail, fetchedAssessment);
 
         const needsDetails = await checkIfAssessmentNeedsDetails(fetchedAssessment.id, userEmail);
         setHasDetailedData(!needsDetails);
@@ -1121,20 +1140,25 @@ export default function AssessmentDetailsScreen() {
         // ============================================================
         console.log('⚠️ Offline: Fetching assessment details from local DB.');
         const offlineAssessment = await getAssessmentDetailsFromDb(assessmentId as string, userEmail);
+        const fullOfflineAssessment = await getAssessmentFullDetailsFromDb(assessmentId as string, userEmail);
         const offlineAttempt = await getOfflineQuizAttempt(parseInt(assessmentId as string), userEmail);
 
-        if (offlineAssessment) {
+        if (offlineAssessment || fullOfflineAssessment) {
+          const mergedAssessment = {
+            ...(offlineAssessment || {}),
+            ...(fullOfflineAssessment || {}),
+          };
           const offlineAttemptCount = await getOfflineAttemptCount(parseInt(assessmentId as string), userEmail);
           
           const updatedAttemptStatus = {
-            ...offlineAssessment.attemptStatus,
+            ...(mergedAssessment as any).attemptStatus,
             attempts_made: offlineAttemptCount.attempts_made,
             attempts_remaining: offlineAttemptCount.attempts_remaining,
             has_in_progress_attempt: !!offlineAttempt,
             can_start_new_attempt: offlineAttemptCount.attempts_remaining === null || offlineAttemptCount.attempts_remaining > 0,
           };
           
-          setAssessmentDetail(offlineAssessment);
+          setAssessmentDetail(mergedAssessment as any);
           setAttemptStatus(updatedAttemptStatus);
           setHasDetailedData(true);
           setHasOfflineAttempt(!!offlineAttempt);
@@ -1152,7 +1176,7 @@ export default function AssessmentDetailsScreen() {
               status: 'to sync',
             });
           } else {
-            setLatestAssignmentSubmission(offlineAssessment.latestSubmission);
+            setLatestAssignmentSubmission((mergedAssessment as any).latestSubmission);
           }
 
         } else {
@@ -2896,6 +2920,35 @@ export default function AssessmentDetailsScreen() {
         fileType={getFileType(assessmentDetail?.assessment_file_path || '') as any}
         isCached={!!downloadedFileUri}
         actions={[
+          ...(!downloadedFileUri
+            ? [
+                (() => {
+                  const name = assessmentDetail?.assessment_file_path || (assessmentDetail?.title ? `${assessmentDetail.title}` : 'Instructions');
+                  const policy = getOfflineOpenPolicy({ fileName: name });
+                  const shouldExternal = isOfficeFileName(assessmentDetail?.assessment_file_path || '') || policy.prefersExternal;
+                  return {
+                    icon: (shouldExternal ? 'open-outline' : 'eye-outline') as 'open-outline' | 'eye-outline',
+                    label: shouldExternal ? 'Download & Open in Another App' : 'Download & View in App',
+                    subtitle: policy.subtitle,
+                    onPress: async () => {
+                      if (!netInfo?.isInternetReachable) {
+                        Alert.alert('Offline Mode', 'Internet connection required to download this file.');
+                        return;
+                      }
+                      const local = await downloadToAppStorage();
+                      if (!local) return;
+                      if (shouldExternal) {
+                        await openLocalFileInAnotherApp(local);
+                      } else {
+                        openInstructionsInApp();
+                      }
+                    },
+                    color: shouldExternal ? '#4285f4' : '#16a34a',
+                    disabled: !netInfo?.isInternetReachable,
+                  };
+                })(),
+              ]
+            : []),
           ...(downloadedFileUri ? [
             ...(!isOfficeFileName(assessmentDetail?.assessment_file_path || '') ? [{
               icon: 'eye-outline' as const,
@@ -3047,6 +3100,37 @@ export default function AssessmentDetailsScreen() {
               color: '#ef4444',
             },
           ] : [
+            (() => {
+              if (!selectedFileForAction) {
+                return {
+                  icon: 'download-outline' as const,
+                  label: 'Download',
+                  onPress: () => {},
+                  disabled: true,
+                } as any;
+              }
+              const policy = getOfflineOpenPolicy({
+                fileName: selectedFileForAction.file.original_name,
+                fileSizeBytes: selectedFileForAction.file.size,
+              });
+              const shouldExternal = isOfficeExtension(selectedFileForAction.file.extension) || policy.prefersExternal;
+              return {
+                icon: (shouldExternal ? 'open-outline' : 'eye-outline') as 'open-outline' | 'eye-outline',
+                label: shouldExternal ? 'Download & Open in Another App' : 'Download & View in App',
+                subtitle: policy.subtitle,
+                onPress: () => {
+                  if (!netInfo?.isInternetReachable) {
+                    Alert.alert('Offline Mode', 'Internet connection required to download this file.');
+                    return;
+                  }
+                  downloadFileToApp(selectedFileForAction.file, selectedFileForAction.index, {
+                    afterDownload: shouldExternal ? 'external' : 'view',
+                  });
+                },
+                color: shouldExternal ? '#4285f4' : '#16a34a',
+                disabled: !netInfo?.isInternetReachable,
+              };
+            })(),
             {
               icon: 'phone-portrait-outline' as const,
               label: 'Save to App',
