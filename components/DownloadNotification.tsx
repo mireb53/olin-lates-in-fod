@@ -1,11 +1,20 @@
-import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Animated } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useAppContext } from '../context/AppContextNew';
-import { downloadManager } from '../lib/downloadManager';
+import React from 'react';
+import { Animated, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+
+const formatFileSize = (bytes: number) => {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const value = bytes / Math.pow(1024, i);
+  return `${value.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+};
 
 export const DownloadNotification: React.FC = () => {
-  const { downloadProgress, cancelDownload } = useAppContext();
+  // This component is currently not wired up in the app.
+  // Keep it as a harmless placeholder to avoid breaking future imports.
+  const downloadProgress = null as any;
+  const cancelDownload = () => {};
   const [slideAnim] = React.useState(new Animated.Value(-100));
 
   React.useEffect(() => {
@@ -81,7 +90,7 @@ export const DownloadNotification: React.FC = () => {
               {currentFileName}
             </Text>
             <Text style={styles.progressText}>
-              File {currentFile} of {totalFiles} • {downloadManager.formatFileSize(downloadedSize)} / {downloadManager.formatFileSize(totalSize)}
+              File {currentFile} of {totalFiles} • {formatFileSize(downloadedSize)} / {formatFileSize(totalSize)}
             </Text>
           </>
         )}
