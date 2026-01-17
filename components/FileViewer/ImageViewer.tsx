@@ -57,10 +57,12 @@ export default function ImageViewer({
   const [hasError, setHasError] = useState(false);
   const [imageSize, setImageSize] = useState({ width: 0, height: 0 });
   const [scale, setScale] = useState(1);
+
+  const isLocal = isCached || uri.startsWith('file://');
   
   // Get image dimensions
   React.useEffect(() => {
-    if (uri) {
+    if (uri && isLocal) {
       Image.getSize(
         uri,
         (width, height) => {
@@ -71,7 +73,7 @@ export default function ImageViewer({
         }
       );
     }
-  }, [uri]);
+  }, [uri, isLocal]);
 
   const handleImageLoad = () => {
     setIsLoading(false);
@@ -98,34 +100,12 @@ export default function ImageViewer({
 
   const renderImage = (containerStyle: any) => (
     <View style={containerStyle}>
-      {isLoading && (
-        <View style={styles.loadingOverlay}>
-          <ActivityIndicator size="large" color="#1967d2" />
-          <Text style={styles.loadingText}>Loading image...</Text>
-        </View>
-      )}
-      
-      {hasError ? (
+      {!isLocal ? (
         <View style={styles.errorContainer}>
-          <Ionicons name="image-outline" size={64} color="#9ca3af" />
-          <Text style={styles.errorText}>Failed to load image</Text>
-          <Text style={styles.errorHint}>
-            {isCached 
-              ? 'This image file may be corrupted'
-              : !isOnline 
-                ? 'No internet connection'
-                : 'Unable to load image'}
-          </Text>
-          {isOnline && (
-            <TouchableOpacity style={styles.retryButton} onPress={() => {
-              setIsLoading(true);
-              setHasError(false);
-            }}>
-              <Ionicons name="refresh" size={18} color="#374151" />
-              <Text style={styles.retryButtonText}>Retry</Text>
-            </TouchableOpacity>
-          )}
-          {!isCached && onDownload && (
+          <Ionicons name="download-outline" size={64} color="#9ca3af" />
+          <Text style={styles.errorText}>Download required</Text>
+          <Text style={styles.errorHint}>Download this image to view it in the app.</Text>
+          {onDownload && (
             <TouchableOpacity style={styles.downloadButton} onPress={onDownload}>
               <Ionicons name="download" size={18} color="#fff" />
               <Text style={styles.downloadButtonText}>Download</Text>
@@ -133,29 +113,62 @@ export default function ImageViewer({
           )}
         </View>
       ) : (
-        <ScrollView
-          style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
-          maximumZoomScale={4}
-          minimumZoomScale={1}
-          showsHorizontalScrollIndicator={false}
-          showsVerticalScrollIndicator={false}
-          centerContent={true}
-          bouncesZoom={true}
-        >
-          <Image
-            source={{ uri }}
-            style={[
-              styles.image,
-              isFullscreen 
-                ? { width: SCREEN_WIDTH, height: SCREEN_WIDTH / aspectRatio }
-                : { width: '100%', aspectRatio }
-            ]}
-            resizeMode="contain"
-            onLoad={handleImageLoad}
-            onError={handleImageError}
-          />
-        </ScrollView>
+        <>
+          {isLoading && (
+            <View style={styles.loadingOverlay}>
+              <ActivityIndicator size="large" color="#1967d2" />
+              <Text style={styles.loadingText}>Loading image...</Text>
+            </View>
+          )}
+
+          {hasError ? (
+            <View style={styles.errorContainer}>
+              <Ionicons name="image-outline" size={64} color="#9ca3af" />
+              <Text style={styles.errorText}>Failed to load image</Text>
+              <Text style={styles.errorHint}>This image file may be corrupted.</Text>
+              <TouchableOpacity
+                style={styles.retryButton}
+                onPress={() => {
+                  setIsLoading(true);
+                  setHasError(false);
+                }}
+              >
+                <Ionicons name="refresh" size={18} color="#374151" />
+                <Text style={styles.retryButtonText}>Retry</Text>
+              </TouchableOpacity>
+              {onDownload && (
+                <TouchableOpacity style={styles.downloadButton} onPress={onDownload}>
+                  <Ionicons name="download" size={18} color="#fff" />
+                  <Text style={styles.downloadButtonText}>Re-download</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          ) : (
+            <ScrollView
+              style={styles.scrollView}
+              contentContainerStyle={styles.scrollContent}
+              maximumZoomScale={4}
+              minimumZoomScale={1}
+              showsHorizontalScrollIndicator={false}
+              showsVerticalScrollIndicator={false}
+              centerContent={true}
+              bouncesZoom={true}
+            >
+              <Image
+                source={{ uri }}
+                style={[
+                  styles.image,
+                  isFullscreen
+                    ? { width: SCREEN_WIDTH, height: SCREEN_WIDTH / aspectRatio }
+                    : { width: '100%', aspectRatio },
+                ]}
+                resizeMode="contain"
+                onLoad={handleImageLoad}
+                onError={handleImageError}
+              />
+            </ScrollView>
+          )}
+        </>
       )}
     </View>
   );
@@ -187,15 +200,15 @@ export default function ImageViewer({
       {/* Footer with info and actions */}
       <View style={styles.footer}>
         <View style={styles.footerInfo}>
-          {isCached ? (
+          {isLocal ? (
             <View style={styles.cachedBadge}>
               <Ionicons name="checkmark-circle" size={14} color="#16a34a" />
               <Text style={styles.cachedText}>Available offline</Text>
             </View>
           ) : (
             <View style={styles.onlineBadge}>
-              <Ionicons name="cloud" size={14} color="#1967d2" />
-              <Text style={styles.onlineText}>Viewing online</Text>
+              <Ionicons name="download-outline" size={14} color="#6b7280" />
+              <Text style={styles.onlineText}>Download required</Text>
             </View>
           )}
           {fileSize && (
@@ -209,7 +222,7 @@ export default function ImageViewer({
         </View>
         
         <View style={styles.footerActions}>
-          {!isCached && onDownload && (
+          {!isLocal && onDownload && (
             <TouchableOpacity style={styles.actionButton} onPress={onDownload}>
               <Ionicons name="download-outline" size={18} color="#1967d2" />
               <Text style={styles.actionButtonText}>Save</Text>
