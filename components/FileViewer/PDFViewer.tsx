@@ -1,20 +1,15 @@
 /**
  * PDFViewer Component
- * 
- * PDF viewer using WebView with Google Docs viewer
- * Features:
- * - Full PDF rendering via Google Docs viewer (online)
- * - Page navigation controls
- * - Zoom controls
- * - Loading states
- * - Fallback for offline viewing
+ *
+ * Download-first PDF viewer.
+ * - If the PDF is downloaded (file://), try to render it in-app.
+ * - If not downloaded yet, require download first (no online WebView viewer).
  */
 
 import { Ionicons } from '@expo/vector-icons';
 import React, { useRef, useState } from 'react';
 import {
     ActivityIndicator,
-    Dimensions,
     Modal,
     StatusBar,
     StyleSheet,
@@ -24,8 +19,6 @@ import {
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { formatFileSize } from './utils';
-
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 interface PDFViewerProps {
   uri: string;
@@ -55,30 +48,7 @@ export default function PDFViewer({
   const [hasError, setHasError] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
-  // Use local file viewer for cached PDFs, Google Docs only for online
-  const getPDFViewerUrl = () => {
-    // For cached/downloaded PDFs, we need to show them differently
-    // WebView cannot directly display local PDF files on mobile
-    // We'll handle this in the render function
-    if (isCached && uri.startsWith('file://')) {
-      return uri; // Will be handled by native sharing
-    }
-    
-    // Only use Google Docs viewer if online and NOT cached
-    if (isOnline && !isCached) {
-      const encodedUri = encodeURIComponent(uri);
-      return `https://docs.google.com/viewer?url=${encodedUri}&embedded=true`;
-    }
-    
-    // Fallback to direct URI
-    return uri;
-  };
-
-  // Alternative: Microsoft Office Online viewer
-  const getMicrosoftViewerUrl = () => {
-    const encodedUri = encodeURIComponent(uri);
-    return `https://view.officeapps.live.com/op/embed.aspx?src=${encodedUri}`;
-  };
+  const isLocal = isCached || uri.startsWith('file://');
 
   const handleLoadStart = () => {
     setIsLoading(true);
@@ -111,9 +81,24 @@ export default function PDFViewer({
   };
 
   const renderPDFContent = (isFullscreenMode: boolean = false) => {
-    // For cached/downloaded PDFs, use Google Docs viewer with file:// protocol
-    // WebView CAN display PDFs using Google Docs viewer even for local files
-    if (isCached && uri.startsWith('file://')) {
+    if (!isLocal) {
+      return (
+        <View style={styles.offlineContainer}>
+          <Ionicons name="download-outline" size={64} color="#9ca3af" />
+          <Text style={styles.offlineTitle}>Download required</Text>
+          <Text style={styles.offlineText}>Download this PDF to view it in the app.</Text>
+          {onDownload && (
+            <TouchableOpacity style={styles.downloadButton} onPress={onDownload}>
+              <Ionicons name="download" size={20} color="#fff" />
+              <Text style={styles.downloadButtonText}>Download PDF</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      );
+    }
+
+    // Local (downloaded) PDF
+    if (uri.startsWith('file://')) {
       if (hasError) {
         return (
           <View style={styles.errorContainer}>
@@ -179,24 +164,6 @@ export default function PDFViewer({
       );
     }
 
-    if (!isOnline && !isCached) {
-      return (
-        <View style={styles.offlineContainer}>
-          <Ionicons name="cloud-offline" size={64} color="#9ca3af" />
-          <Text style={styles.offlineTitle}>No Internet Connection</Text>
-          <Text style={styles.offlineText}>
-            Download this PDF for offline viewing
-          </Text>
-          {onDownload && (
-            <TouchableOpacity style={styles.downloadButton} onPress={onDownload}>
-              <Ionicons name="download" size={20} color="#fff" />
-              <Text style={styles.downloadButtonText}>Download PDF</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-      );
-    }
-
     if (hasError) {
       return (
         <View style={styles.errorContainer}>
@@ -228,7 +195,7 @@ export default function PDFViewer({
       ]}>
         <WebView
           ref={webViewRef}
-          source={{ uri: getPDFViewerUrl() }}
+          source={{ uri: uri }}
           style={styles.webView}
           onLoadStart={handleLoadStart}
           onLoadEnd={handleLoadEnd}
@@ -276,7 +243,7 @@ export default function PDFViewer({
           <TouchableOpacity style={styles.headerButton} onPress={toggleFullscreen}>
             <Ionicons name="expand" size={20} color="#4b5563" />
           </TouchableOpacity>
-          {onDownload && !isCached && (
+          {onDownload && !isLocal && (
             <TouchableOpacity style={styles.headerButton} onPress={onDownload}>
               <Ionicons name="download-outline" size={20} color="#4b5563" />
             </TouchableOpacity>
@@ -296,20 +263,15 @@ export default function PDFViewer({
 
       {/* Footer */}
       <View style={styles.footer}>
-        {isCached ? (
+        {isLocal ? (
           <View style={styles.cachedBadge}>
             <Ionicons name="checkmark-circle" size={14} color="#16a34a" />
             <Text style={styles.cachedText}>Downloaded</Text>
           </View>
-        ) : isOnline ? (
-          <View style={styles.onlineBadge}>
-            <Ionicons name="cloud" size={14} color="#1967d2" />
-            <Text style={styles.onlineText}>Viewing online</Text>
-          </View>
         ) : (
           <View style={styles.offlineBadge}>
-            <Ionicons name="cloud-offline" size={14} color="#dc2626" />
-            <Text style={styles.offlineBadgeText}>Offline</Text>
+            <Ionicons name="download-outline" size={14} color="#6b7280" />
+            <Text style={styles.offlineBadgeText}>Download required</Text>
           </View>
         )}
         
@@ -341,6 +303,11 @@ export default function PDFViewer({
             {onShare && (
               <TouchableOpacity style={styles.fullscreenActionButton} onPress={onShare}>
                 <Ionicons name="share-outline" size={24} color="#fff" />
+              </TouchableOpacity>
+            )}
+            {onDownload && !isLocal && (
+              <TouchableOpacity style={styles.fullscreenActionButton} onPress={onDownload}>
+                <Ionicons name="download-outline" size={24} color="#fff" />
               </TouchableOpacity>
             )}
           </View>
