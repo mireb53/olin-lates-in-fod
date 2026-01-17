@@ -302,6 +302,15 @@ export const initDb = async (): Promise<void> => {
               PRIMARY KEY (id, user_email),
               FOREIGN KEY (course_id, user_email) REFERENCES offline_courses(id, user_email) ON DELETE CASCADE
             );`,
+
+            // 4b. offline_material_details (full material JSON including files/links)
+            `CREATE TABLE IF NOT EXISTS offline_material_details (
+              material_id INTEGER NOT NULL,
+              user_email TEXT NOT NULL,
+              data TEXT NOT NULL,
+              PRIMARY KEY (material_id, user_email),
+              FOREIGN KEY (material_id, user_email) REFERENCES offline_materials(id, user_email) ON DELETE CASCADE
+            );`,
             
             // 5. offline_assessments (references offline_courses)
             `CREATE TABLE IF NOT EXISTS offline_assessments (
@@ -329,6 +338,15 @@ export const initDb = async (): Promise<void> => {
               assessment_id INTEGER NOT NULL, 
               user_email TEXT NOT NULL, 
               data TEXT NOT NULL, 
+              PRIMARY KEY (assessment_id, user_email),
+              FOREIGN KEY (assessment_id, user_email) REFERENCES offline_assessments(id, user_email) ON DELETE CASCADE
+            );`,
+
+            // 6b. offline_assessment_details (full assessment JSON including files/links)
+            `CREATE TABLE IF NOT EXISTS offline_assessment_details (
+              assessment_id INTEGER NOT NULL,
+              user_email TEXT NOT NULL,
+              data TEXT NOT NULL,
               PRIMARY KEY (assessment_id, user_email),
               FOREIGN KEY (assessment_id, user_email) REFERENCES offline_assessments(id, user_email) ON DELETE CASCADE
             );`,
@@ -848,6 +866,17 @@ export const saveMaterialsToDb = async (materials: any[], courseId: number, user
             material.unavailable_at || null
           ]
         );
+
+        // Cache full material JSON (includes files/links arrays if present)
+        try {
+          const fullEncrypted = encryptData(JSON.stringify(material ?? {}));
+          await db.runAsync(
+            `INSERT OR REPLACE INTO offline_material_details (material_id, user_email, data) VALUES (?, ?, ?);`,
+            [material.id, userEmail, fullEncrypted]
+          );
+        } catch (detailErr) {
+          console.error('❌ Failed to save material full details:', detailErr);
+        }
       } catch (materialError) {
         console.error('❌ Failed to save material:', materialError);
       }
@@ -875,6 +904,80 @@ export const getMaterialDetailsFromDb = async (materialId: number, userEmail: st
     return null;
   } catch (error) {
     console.error(`❌ Failed to get material ${materialId}:`, error);
+    return null;
+  }
+};
+
+export const saveMaterialFullDetailsToDb = async (
+  materialId: number,
+  userEmail: string,
+  materialData: any
+): Promise<void> => {
+  try {
+    await initDb();
+    const db = await getDb();
+    const dataString = JSON.stringify(materialData ?? {});
+    const encrypted = encryptData(dataString);
+    await db.runAsync(
+      `INSERT OR REPLACE INTO offline_material_details (material_id, user_email, data) VALUES (?, ?, ?);`,
+      [materialId, userEmail, encrypted]
+    );
+  } catch (error) {
+    console.error(`❌ Failed to save material details ${materialId}:`, error);
+
+    // If FK constraints are enabled and the base row is missing, create a minimal base row and retry.
+    try {
+      await initDb();
+      const db = await getDb();
+      const courseId = Number(materialData?.course_id || 0);
+      if (courseId > 0) {
+        const encryptedFilePath = materialData?.file_path ? encryptData(String(materialData.file_path)) : '';
+        const encryptedContent = materialData?.content ? encryptData(String(materialData.content)) : '';
+        await db.runAsync(
+          `INSERT OR REPLACE INTO offline_materials 
+           (id, user_email, course_id, title, file_path, content, material_type, created_at, available_at, unavailable_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+          [
+            materialId,
+            userEmail,
+            courseId,
+            String(materialData?.title || 'Untitled'),
+            encryptedFilePath,
+            encryptedContent,
+            String(materialData?.type || materialData?.material_type || 'document'),
+            String(materialData?.created_at || new Date().toISOString()),
+            materialData?.available_at || null,
+            materialData?.unavailable_at || null,
+          ]
+        );
+
+        const encryptedFull = encryptData(JSON.stringify(materialData ?? {}));
+        await db.runAsync(
+          `INSERT OR REPLACE INTO offline_material_details (material_id, user_email, data) VALUES (?, ?, ?);`,
+          [materialId, userEmail, encryptedFull]
+        );
+      }
+    } catch (retryErr) {
+      console.error(`❌ Failed to retry save material details ${materialId}:`, retryErr);
+    }
+  }
+};
+
+export const getMaterialFullDetailsFromDb = async (
+  materialId: number,
+  userEmail: string
+): Promise<any | null> => {
+  try {
+    const db = await getDb();
+    const result = await db.getFirstAsync<{ data: string }>(
+      `SELECT data FROM offline_material_details WHERE material_id = ? AND user_email = ?;`,
+      [materialId, userEmail]
+    );
+    if (!result?.data) return null;
+    const decrypted = decryptData(result.data);
+    return JSON.parse(decrypted);
+  } catch (error) {
+    console.error(`❌ Failed to get material details ${materialId}:`, error);
     return null;
   }
 };
@@ -967,6 +1070,17 @@ export const saveAssessmentsToDb = async (assessments: any[], courseId: number, 
             assessment.allow_answer_review ? 1 : 0, // Add this field
           ]
         );
+
+        // Cache full assessment JSON (includes files/links arrays if present)
+        try {
+          const fullEncrypted = encryptData(JSON.stringify(assessment ?? {}));
+          await db.runAsync(
+            `INSERT OR REPLACE INTO offline_assessment_details (assessment_id, user_email, data) VALUES (?, ?, ?);`,
+            [assessment.id, userEmail, fullEncrypted]
+          );
+        } catch (detailErr) {
+          console.error('❌ Failed to save assessment full details:', detailErr);
+        }
       } catch (error) {
         console.error(`❌ Failed to save assessment ${assessment.id}:`, error);
         throw error;
@@ -1023,6 +1137,84 @@ export const saveAssessmentDetailsToDb = async (
   } catch (error) {
     console.error('❌ Failed to save detailed assessment data:', error);
     throw error;
+  }
+};
+
+export const saveAssessmentFullDetailsToDb = async (
+  assessmentId: number | string,
+  userEmail: string,
+  assessmentData: any
+): Promise<void> => {
+  try {
+    await initDb();
+    const db = await getDb();
+    const dataString = JSON.stringify(assessmentData ?? {});
+    const encrypted = encryptData(dataString);
+    await db.runAsync(
+      `INSERT OR REPLACE INTO offline_assessment_details (assessment_id, user_email, data) VALUES (?, ?, ?);`,
+      [assessmentId, userEmail, encrypted]
+    );
+  } catch (error) {
+    console.error(`❌ Failed to save assessment details ${assessmentId}:`, error);
+
+    // If FK constraints are enabled and the base row is missing, create a minimal base row and retry.
+    try {
+      await initDb();
+      const db = await getDb();
+      const courseId = Number(assessmentData?.course_id || 0);
+      const idNum = Number(assessmentId);
+      if (courseId > 0 && Number.isFinite(idNum) && idNum > 0) {
+        await db.runAsync(
+          `INSERT OR REPLACE INTO offline_assessments
+           (id, course_id, user_email, title, type, description, available_at, unavailable_at,
+            max_attempts, duration_minutes, points, assessment_file_path, assessment_file_url, allow_answer_review)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+          [
+            idNum,
+            courseId,
+            userEmail,
+            String(assessmentData?.title || ''),
+            String(assessmentData?.type || ''),
+            String(assessmentData?.description || ''),
+            assessmentData?.available_at || null,
+            assessmentData?.unavailable_at || null,
+            assessmentData?.max_attempts || null,
+            assessmentData?.duration_minutes || null,
+            assessmentData?.total_points ?? assessmentData?.points ?? 0,
+            assessmentData?.assessment_file_path || null,
+            assessmentData?.assessment_file_url || null,
+            assessmentData?.allow_answer_review ? 1 : 0,
+          ]
+        );
+
+        const encryptedFull = encryptData(JSON.stringify(assessmentData ?? {}));
+        await db.runAsync(
+          `INSERT OR REPLACE INTO offline_assessment_details (assessment_id, user_email, data) VALUES (?, ?, ?);`,
+          [idNum, userEmail, encryptedFull]
+        );
+      }
+    } catch (retryErr) {
+      console.error(`❌ Failed to retry save assessment details ${assessmentId}:`, retryErr);
+    }
+  }
+};
+
+export const getAssessmentFullDetailsFromDb = async (
+  assessmentId: number | string,
+  userEmail: string
+): Promise<any | null> => {
+  try {
+    const db = await getDb();
+    const result = await db.getFirstAsync<{ data: string }>(
+      `SELECT data FROM offline_assessment_details WHERE assessment_id = ? AND user_email = ?;`,
+      [assessmentId, userEmail]
+    );
+    if (!result?.data) return null;
+    const decrypted = decryptData(result.data);
+    return JSON.parse(decrypted);
+  } catch (error) {
+    console.error(`❌ Failed to get assessment details ${assessmentId}:`, error);
+    return null;
   }
 };
 
