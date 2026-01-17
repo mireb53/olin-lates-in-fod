@@ -78,6 +78,8 @@ export default function AudioPlayer({
   
   const pulseAnim = useRef(new Animated.Value(1)).current;
 
+  const isLocal = isCached || uri.startsWith('file://');
+
   // Extract status values
   const isLoaded = status?.isLoaded ?? false;
   const isPlaying = isLoaded && (status as any)?.isPlaying;
@@ -111,14 +113,20 @@ export default function AudioPlayer({
     }
   }, [isPlaying]);
 
-  // Initialize audio
+  // Initialize audio (download-first: local files only)
   useEffect(() => {
+    if (!isLocal) {
+      setIsLoading(false);
+      setHasError(false);
+      return;
+    }
+
     loadAudio();
-    
+
     return () => {
       unloadAudio();
     };
-  }, [uri]);
+  }, [uri, isLocal]);
 
   const loadAudio = async () => {
     try {
@@ -238,6 +246,24 @@ export default function AudioPlayer({
     </View>
   );
 
+  if (!isLocal) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.errorContainer}>
+          <Ionicons name="download-outline" size={48} color="#9ca3af" />
+          <Text style={styles.errorText}>Download required</Text>
+          <Text style={styles.offlineHint}>Download this audio to play it in the app.</Text>
+          {onDownload && (
+            <TouchableOpacity style={styles.downloadButton} onPress={onDownload}>
+              <Ionicons name="download" size={18} color="#fff" />
+              <Text style={styles.downloadButtonText}>Download</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      </View>
+    );
+  }
+
   if (isLoading) {
     return (
       <View style={styles.container}>
@@ -266,7 +292,7 @@ export default function AudioPlayer({
             <Ionicons name="refresh" size={18} color="#374151" />
             <Text style={styles.retryText}>Retry</Text>
           </TouchableOpacity>
-          {!isCached && onDownload && (
+          {!isLocal && onDownload && (
             <TouchableOpacity style={styles.downloadButton} onPress={onDownload}>
               <Ionicons name="download" size={18} color="#fff" />
               <Text style={styles.downloadButtonText}>Download</Text>
@@ -443,15 +469,15 @@ export default function AudioPlayer({
 
       {/* Status badge */}
       <View style={styles.footer}>
-        {isCached ? (
+        {isLocal ? (
           <View style={styles.cachedBadge}>
             <Ionicons name="checkmark-circle" size={14} color="#16a34a" />
             <Text style={styles.cachedText}>Available offline</Text>
           </View>
         ) : (
           <View style={styles.onlineBadge}>
-            <Ionicons name="cloud" size={14} color="#1967d2" />
-            <Text style={styles.onlineText}>Streaming online</Text>
+            <Ionicons name="download-outline" size={14} color="#6b7280" />
+            <Text style={styles.onlineText}>Download required</Text>
           </View>
         )}
       </View>
