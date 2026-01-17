@@ -315,7 +315,7 @@ export default function LoginScreen() {
             {!isConnected && (
               <View style={styles.offlineNotice}>
                 <Ionicons name="cloud-offline-outline" size={20} color="#5f6368" />
-                <Text style={styles.offlineText}>You're offline. Connect to sign in.</Text>
+                <Text style={styles.offlineText}>You are offline. Connect to sign in.</Text>
               </View>
             )}
             
