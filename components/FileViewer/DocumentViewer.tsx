@@ -1,19 +1,18 @@
 /**
  * DocumentViewer Component
- * 
- * View Office documents (Word, Excel, PowerPoint) using:
- * - Native apps via IntentLauncher for downloaded files (offline support)
- * - Microsoft Office Online viewer for online files
- * - Google Docs viewer as fallback
+ *
+ * Download-first viewer for Office documents (Word, Excel, PowerPoint).
+ * Office formats are opened externally once downloaded, via native apps.
+ *
+ * Note: No in-app online preview (WebView) is used.
  */
 
 import { Ionicons } from '@expo/vector-icons';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as IntentLauncher from 'expo-intent-launcher';
 import * as Sharing from 'expo-sharing';
-import React, { useRef, useState } from 'react';
+import React, { useState } from 'react';
 import {
-    ActivityIndicator,
     Alert,
     Modal,
     Platform,
@@ -23,7 +22,6 @@ import {
     TouchableOpacity,
     View,
 } from 'react-native';
-import { WebView } from 'react-native-webview';
 import { formatFileSize } from './utils';
 
 interface DocumentViewerProps {
@@ -85,17 +83,14 @@ export default function DocumentViewer({
   onClose,
   isOnline = true,
 }: DocumentViewerProps) {
-  const webViewRef = useRef<WebView>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [hasError, setHasError] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [viewerType, setViewerType] = useState<'microsoft' | 'google'>('microsoft');
+  const isLocal = isCached || uri.startsWith('file://');
 
   const documentInfo = getDocumentInfo(fileName);
 
   // Open document with native app (for cached files)
   const openWithNativeApp = async () => {
-    if (!isCached || !uri.startsWith('file://')) {
+    if (!isLocal || !uri.startsWith('file://')) {
       Alert.alert('Error', 'File must be downloaded first');
       return;
     }
@@ -129,56 +124,12 @@ export default function DocumentViewer({
     }
   };
 
-  // Microsoft Office Online viewer
-  const getMicrosoftViewerUrl = () => {
-    const encodedUri = encodeURIComponent(uri);
-    return `https://view.officeapps.live.com/op/embed.aspx?src=${encodedUri}`;
-  };
-
-  // Google Docs viewer as fallback
-  const getGoogleViewerUrl = () => {
-    const encodedUri = encodeURIComponent(uri);
-    return `https://docs.google.com/viewer?url=${encodedUri}&embedded=true`;
-  };
-
-  const getViewerUrl = () => {
-    return viewerType === 'microsoft' ? getMicrosoftViewerUrl() : getGoogleViewerUrl();
-  };
-
-  const handleLoadStart = () => {
-    setIsLoading(true);
-    setHasError(false);
-  };
-
-  const handleLoadEnd = () => {
-    setIsLoading(false);
-  };
-
-  const handleError = () => {
-    // Try Google viewer if Microsoft fails
-    if (viewerType === 'microsoft') {
-      setViewerType('google');
-      return;
-    }
-    setIsLoading(false);
-    setHasError(true);
-  };
-
-  const handleReload = () => {
-    setHasError(false);
-    setIsLoading(true);
-    setViewerType('microsoft'); // Reset to Microsoft viewer
-    webViewRef.current?.reload();
-  };
-
   const toggleFullscreen = () => {
     setIsFullscreen(!isFullscreen);
   };
 
   const renderDocumentContent = (isFullscreenMode: boolean = false) => {
-    // For cached/downloaded documents, try to display in WebView first
-    // Office documents can be viewed using Google Docs/Microsoft viewer even for local files
-    if (isCached && uri.startsWith('file://')) {
+    if (isLocal && uri.startsWith('file://')) {
       // For local Office documents, we need to convert to a viewable format
       // Since WebView cannot directly view local .docx/.xlsx/.pptx files,
       // we'll show an embedded viewer that uses the file content
@@ -209,7 +160,7 @@ export default function DocumentViewer({
                 onPress={openWithNativeApp}
               >
                 <Ionicons name="eye-outline" size={20} color="#fff" />
-                <Text style={styles.primaryActionText}>Open with External App</Text>
+                <Text style={styles.primaryActionText}>Open in another app</Text>
               </TouchableOpacity>
               
               {onShare && (
@@ -227,79 +178,20 @@ export default function DocumentViewer({
         </View>
       );
     }
-    
-    if (!isOnline) {
-      return (
-        <View style={styles.offlineContainer}>
-          <Ionicons name="cloud-offline" size={64} color="#9ca3af" />
-          <Text style={styles.offlineTitle}>No Internet Connection</Text>
-          <Text style={styles.offlineText}>
-            Office documents require an internet connection to preview.{'\n'}
-            Download the file to open with another app offline.
-          </Text>
-          {onDownload && (
-            <TouchableOpacity style={styles.downloadButton} onPress={onDownload}>
-              <Ionicons name="download" size={20} color="#fff" />
-              <Text style={styles.downloadButtonText}>Download Document</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-      );
-    }
 
-    if (hasError) {
-      return (
-        <View style={styles.errorContainer}>
-          <Ionicons name={documentInfo.icon as any} size={64} color="#9ca3af" />
-          <Text style={styles.errorTitle}>Unable to display document</Text>
-          <Text style={styles.errorText}>
-            This document format cannot be previewed.{'\n'}
-            Download it to open with another app.
-          </Text>
-          <View style={styles.errorActions}>
-            <TouchableOpacity style={styles.retryButton} onPress={handleReload}>
-              <Ionicons name="refresh" size={18} color="#374151" />
-              <Text style={styles.retryButtonText}>Retry</Text>
-            </TouchableOpacity>
-            {onDownload && (
-              <TouchableOpacity style={styles.downloadButton} onPress={onDownload}>
-                <Ionicons name="download" size={18} color="#fff" />
-                <Text style={styles.downloadButtonText}>Download</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        </View>
-      );
-    }
-
+    // Not downloaded: require download-first
     return (
-      <View style={[
-        styles.webViewContainer,
-        isFullscreenMode && styles.fullscreenWebViewContainer
-      ]}>
-        <WebView
-          ref={webViewRef}
-          source={{ uri: getViewerUrl() }}
-          style={styles.webView}
-          onLoadStart={handleLoadStart}
-          onLoadEnd={handleLoadEnd}
-          onError={handleError}
-          originWhitelist={['*']}
-          javaScriptEnabled={true}
-          domStorageEnabled={true}
-          startInLoadingState={false}
-          scalesPageToFit={true}
-          bounces={false}
-        />
-        
-        {isLoading && (
-          <View style={styles.loadingOverlay}>
-            <ActivityIndicator size="large" color={documentInfo.color} />
-            <Text style={styles.loadingText}>Loading document...</Text>
-            <Text style={styles.loadingHint}>
-              Using {viewerType === 'microsoft' ? 'Microsoft Office' : 'Google Docs'} viewer
-            </Text>
-          </View>
+      <View style={styles.offlineContainer}>
+        <Ionicons name="download-outline" size={64} color="#9ca3af" />
+        <Text style={styles.offlineTitle}>Download required</Text>
+        <Text style={styles.offlineText}>
+          Download this {documentInfo.type.toLowerCase()} to open it in another app.
+        </Text>
+        {onDownload && (
+          <TouchableOpacity style={styles.downloadButton} onPress={onDownload}>
+            <Ionicons name="download" size={20} color="#fff" />
+            <Text style={styles.downloadButtonText}>Download</Text>
+          </TouchableOpacity>
         )}
       </View>
     );
@@ -335,7 +227,7 @@ export default function DocumentViewer({
           <TouchableOpacity style={styles.headerButton} onPress={toggleFullscreen}>
             <Ionicons name="expand" size={20} color="#4b5563" />
           </TouchableOpacity>
-          {onDownload && (
+          {onDownload && !isLocal && (
             <TouchableOpacity style={styles.headerButton} onPress={onDownload}>
               <Ionicons name="download-outline" size={20} color="#4b5563" />
             </TouchableOpacity>
@@ -356,13 +248,20 @@ export default function DocumentViewer({
       {/* Footer */}
       <View style={styles.footer}>
         <View style={styles.footerInfo}>
-          <Ionicons name="globe-outline" size={14} color="#6b7280" />
-          <Text style={styles.footerText}>
-            Powered by {viewerType === 'microsoft' ? 'Microsoft Office Online' : 'Google Docs'}
-          </Text>
+          {isLocal ? (
+            <>
+              <Ionicons name="checkmark-circle" size={14} color="#16a34a" />
+              <Text style={styles.footerText}>Downloaded</Text>
+            </>
+          ) : (
+            <>
+              <Ionicons name="download-outline" size={14} color="#6b7280" />
+              <Text style={styles.footerText}>Download required</Text>
+            </>
+          )}
         </View>
-        
-        <Text style={styles.hint}>Scroll to view • Pinch to zoom</Text>
+
+        <Text style={styles.hint}>Office documents open in another app</Text>
       </View>
     </View>
   );
@@ -395,7 +294,7 @@ export default function DocumentViewer({
                 <Ionicons name="share-outline" size={24} color="#fff" />
               </TouchableOpacity>
             )}
-            {onDownload && (
+            {onDownload && !isLocal && (
               <TouchableOpacity style={styles.fullscreenActionButton} onPress={onDownload}>
                 <Ionicons name="download-outline" size={24} color="#fff" />
               </TouchableOpacity>
