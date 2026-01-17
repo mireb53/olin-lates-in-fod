@@ -14,13 +14,13 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
-  Alert,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
+    ActivityIndicator,
+    Alert,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View,
 } from 'react-native';
 import { formatFileSize } from './utils';
 
@@ -101,6 +101,8 @@ export default function CodeViewer({
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string>('');
+  const [isTruncated, setIsTruncated] = useState(false);
+  const [truncatedInfo, setTruncatedInfo] = useState<{ shownBytes: number; totalBytes?: number } | null>(null);
   const [isDarkTheme, setIsDarkTheme] = useState(true);
   const [showLineNumbers, setShowLineNumbers] = useState(true);
   const [copied, setCopied] = useState(false);
@@ -117,8 +119,11 @@ export default function CodeViewer({
       setIsLoading(true);
       setHasError(false);
       setErrorMessage('');
+      setIsTruncated(false);
+      setTruncatedInfo(null);
 
       const MAX_PREVIEW_BYTES = 1024 * 1024; // 1MB
+      const TRUNCATED_PREVIEW_BYTES = 256 * 1024; // 256KB
 
       // Try to read from local file first (if cached)
       const isLocalUri =
@@ -132,13 +137,32 @@ export default function CodeViewer({
         if (!info.exists) {
           throw new Error('File not found.');
         }
-        if ('size' in info && typeof info.size === 'number' && info.size > MAX_PREVIEW_BYTES) {
-          throw new Error('This file is too large to preview in the app.');
+        const sizeBytes = 'size' in info && typeof info.size === 'number' ? info.size : undefined;
+
+        let content: string;
+        if (typeof sizeBytes === 'number' && sizeBytes > MAX_PREVIEW_BYTES) {
+          // Prefer a truncated preview for big text/code files.
+          try {
+            content = await FileSystem.readAsStringAsync(
+              uri,
+              {
+                encoding: FileSystem.EncodingType.UTF8,
+                position: 0,
+                length: TRUNCATED_PREVIEW_BYTES,
+              } as any
+            );
+            setIsTruncated(true);
+            setTruncatedInfo({ shownBytes: TRUNCATED_PREVIEW_BYTES, totalBytes: sizeBytes });
+            content += `\n\n… (Preview truncated. File is ${formatFileSize(sizeBytes)}. Open in another app for the full file.)`;
+          } catch (e) {
+            throw new Error('This file is too large to preview fully. Try opening it in another app.');
+          }
+        } else {
+          content = await FileSystem.readAsStringAsync(uri, {
+            encoding: FileSystem.EncodingType.UTF8,
+          });
         }
 
-        const content = await FileSystem.readAsStringAsync(uri, {
-          encoding: FileSystem.EncodingType.UTF8,
-        });
         setCode(content);
         setIsLoading(false);
         return;
@@ -298,6 +322,7 @@ export default function CodeViewer({
             <Text style={[styles.language, { color: theme.lineNumberText }]}>
               {language} • {lines.length} lines
               {fileSize && ` • ${formatFileSize(fileSize)}`}
+              {isTruncated && truncatedInfo?.totalBytes != null && ` • preview (first ${formatFileSize(truncatedInfo.shownBytes)})`}
             </Text>
           </View>
         </View>
