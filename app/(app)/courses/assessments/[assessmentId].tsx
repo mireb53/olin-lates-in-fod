@@ -8,18 +8,18 @@ import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import * as Sharing from 'expo-sharing';
 import React, { useCallback, useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    Dimensions,
-    Linking,
-    Modal,
-    Platform,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View
+  ActivityIndicator,
+  Alert,
+  Dimensions,
+  Linking,
+  Modal,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View
 } from 'react-native';
 
 // Import UI components
@@ -39,23 +39,23 @@ import { usePendingSyncNotification } from '@/hooks/usePendingSyncNotification';
 import { useNetworkStatus } from '../../../../context/NetworkContext';
 import api, { getUserData } from '../../../../lib/api';
 import {
-    checkIfAssessmentNeedsDetails,
-    deleteOfflineQuizAttempt,
-    getAssessmentDetailsFromDb,
-    getAssessmentFullDetailsFromDb,
-    getCompletedOfflineQuizzes,
-    getCurrentServerTime,
-    getOfflineAttemptCount,
-    getOfflineQuizAttempt,
-    getQuizQuestionsFromDb, // ADDED: Required for shuffling questions before start
-    getUnsyncedSubmissions,
-    hasAssessmentReviewSaved,
-    saveAssessmentDetailsToDb,
-    saveAssessmentFullDetailsToDb,
-    saveAssessmentReviewToDb,
-    saveAssessmentsToDb,
-    saveOfflineSubmission,
-    startOfflineQuiz
+  checkIfAssessmentNeedsDetails,
+  deleteOfflineQuizAttempt,
+  getAssessmentDetailsFromDb,
+  getAssessmentFullDetailsFromDb,
+  getCompletedOfflineQuizzes,
+  getCurrentServerTime,
+  getOfflineAttemptCount,
+  getOfflineQuizAttempt,
+  getQuizQuestionsFromDb, // ADDED: Required for shuffling questions before start
+  getUnsyncedSubmissions,
+  hasAssessmentReviewSaved,
+  saveAssessmentDetailsToDb,
+  saveAssessmentFullDetailsToDb,
+  saveAssessmentReviewToDb,
+  saveAssessmentsToDb,
+  saveOfflineSubmission,
+  startOfflineQuiz
 } from '../../../../lib/localDb';
 
 // File item in the files array (for assessments)
