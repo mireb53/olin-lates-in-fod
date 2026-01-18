@@ -606,10 +606,6 @@ export default function MaterialDetailsScreen() {
   const fetchMaterialDetails = async () => {
     setLoading(true);
     setError(null);
-    setPreviewFailed(false);
-    setOnlinePreviewUri(null);
-    setShowFallback(false);
-    setImageError(false);
     
     const user = await getUserData();
     const userEmail = user?.email;
@@ -782,19 +778,6 @@ export default function MaterialDetailsScreen() {
     } catch (error) {
       console.error('Failed to build authenticated file URL', error);
       return null;
-    }
-  };
-
-  const loadCodeContent = async (fileUri: string) => {
-    if (!fileUri) return;
-    setIsLoadingCode(true);
-    try {
-      const content = await FileSystem.readAsStringAsync(fileUri);
-      setCodeContent(content);
-    } catch (error) {
-      Alert.alert('Error', 'Failed to load code content for viewing.');
-    } finally {
-      setIsLoadingCode(false);
     }
   };
 
@@ -1469,15 +1452,6 @@ export default function MaterialDetailsScreen() {
     }
   };
 
-  useEffect(() => {
-    if (downloadedFileUri && materialDetail) {
-      const fileType = getFileType(materialDetail.file_path || '');
-      if (fileType === 'code') {
-        loadCodeContent(downloadedFileUri);
-      }
-    }
-  }, [downloadedFileUri, materialDetail]);
-
   // Removed previewFailed/showFallback effect (dead code)
 
   const handleOpenFile = async () => {
@@ -1522,7 +1496,6 @@ export default function MaterialDetailsScreen() {
       return;
     }
     setIsRefreshing(true);
-    setImageError(false); // ADD THIS LINE
     try {
       await fetchMaterialDetails();
     } catch (error) {
@@ -1574,346 +1547,14 @@ export default function MaterialDetailsScreen() {
       <Stack.Screen options={{ title: materialDetail.title || 'Material Details' }} />
 
       <ScrollView
-    if (downloadedFileUri) {
-      return (
-        <View style={styles.inlineViewerCard}>
-          {/* Header with title and fullscreen button */}
-          <View style={styles.inlineViewerHeader}>
-            <View style={styles.inlineViewerTitleRow}>
-              <View style={[styles.inlineViewerTypeBadge, { backgroundColor: `${fileColor}15` }]}>
-                <Ionicons name={getFileIcon(fileType) as any} size={16} color={fileColor} />
-              </View>
-              <Text style={styles.inlineViewerTitle} numberOfLines={1}>
-                {materialDetail.title || 'File Preview'}
-              </Text>
-            </View>
-            <View style={styles.inlineViewerActions}>
-              <TouchableOpacity 
-                style={styles.inlineViewerActionBtn}
-                onPress={() => openLocalFileInAnotherApp(downloadedFileUri, materialDetail.title || 'File')}
-              >
-                <Ionicons name="expand" size={20} color="#4285f4" />
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.inlineViewerActionBtn} onPress={handleOpenFile}>
-                <Ionicons name="open-outline" size={20} color="#4285f4" />
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.inlineViewerActionBtn} onPress={handleDeleteDownload}>
-                <Ionicons name="trash-outline" size={20} color="#d93025" />
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {/* Actual Inline Viewer Content */}
-          <View style={styles.inlineViewerContent}>
-            {fileType === 'image' && (
-              <TouchableOpacity 
-                onPress={() => openLocalFileInAnotherApp(downloadedFileUri, materialDetail.title || 'Image')}
-                activeOpacity={0.9}
-              >
-                <Image 
-                  source={{ uri: downloadedFileUri }} 
-                  style={styles.inlineImageViewer}
-                  resizeMode="contain"
-                />
-                <View style={styles.inlineViewerTapHint}>
-                  <Ionicons name="open-outline" size={16} color="#fff" />
-                  <Text style={styles.inlineViewerTapHintText}>Tap to open</Text>
-                </View>
-              </TouchableOpacity>
-            )}
-
-            {fileType === 'video' && (
-              <View style={styles.inlineVideoContainer}>
-                <Video
-                  ref={videoRef}
-                  style={styles.inlineVideoViewer}
-                  source={{ uri: downloadedFileUri }}
-                  useNativeControls
-                  resizeMode={ResizeMode.CONTAIN}
-                  onPlaybackStatusUpdate={setVideoStatus}
-                />
-                <TouchableOpacity 
-                  style={styles.inlineFullscreenBtn}
-                  onPress={() => openLocalFileInAnotherApp(downloadedFileUri, materialDetail.title || 'Video')}
-                >
-                  <Ionicons name="open-outline" size={20} color="#fff" />
-                </TouchableOpacity>
-              </View>
-            )}
-
-            {fileType === 'audio' && (
-              <View style={styles.inlineAudioContainer}>
-                <View style={styles.inlineAudioVisual}>
-                  <Ionicons name="musical-notes" size={40} color={fileColor} />
-                </View>
-                <Video
-                  ref={videoRef}
-                  style={styles.inlineAudioPlayer}
-                  source={{ uri: downloadedFileUri }}
-                  useNativeControls
-                  resizeMode={ResizeMode.CONTAIN}
-                  onPlaybackStatusUpdate={setVideoStatus}
-                />
-                <TouchableOpacity 
-                  style={styles.inlineAudioFullscreenBtn}
-                  onPress={() => openLocalFileInAnotherApp(downloadedFileUri, materialDetail.title || 'Audio')}
-                >
-                  <Ionicons name="open-outline" size={18} color="#4285f4" />
-                  <Text style={styles.inlineAudioFullscreenText}>Open App</Text>
-                </TouchableOpacity>
-              </View>
-            )}
-
-            {(fileType === 'pdf' || fileType === 'document') && (
-              <TouchableOpacity 
-                style={styles.inlineDocumentContainer}
-                onPress={() => openLocalFileInAnotherApp(downloadedFileUri, materialDetail.title || 'Document')}
-                activeOpacity={0.9}
-              >
-                <View style={[styles.inlineDocumentPreview, { backgroundColor: `${fileColor}08` }]}>
-                  <Ionicons name={getFileIcon(fileType) as any} size={64} color={fileColor} />
-                  <Text style={styles.inlineDocumentName}>{materialDetail.title}</Text>
-                  <Text style={styles.inlineDocumentSize}>{fileSize}</Text>
-                </View>
-                <View style={styles.inlineDocumentOverlay}>
-                  <View style={[styles.inlineDocumentOpenBtn, { backgroundColor: fileColor }]}>
-                    <Ionicons name="open-outline" size={24} color="#fff" />
-                    <Text style={styles.inlineDocumentOpenText}>Open Document</Text>
-                  </View>
-                </View>
-              </TouchableOpacity>
-            )}
-
-            {fileType === 'code' && codeContent && (
-              <TouchableOpacity 
-                style={styles.inlineCodeContainer}
-                onPress={() => openLocalFileInAnotherApp(downloadedFileUri, materialDetail.title || 'Code')}
-                activeOpacity={0.9}
-              >
-                <ScrollView style={styles.inlineCodeScroll} nestedScrollEnabled>
-                  <Text style={styles.inlineCodeText} numberOfLines={12}>
-                    {codeContent}
-                  </Text>
-                </ScrollView>
-                <View style={styles.inlineCodeOverlay}>
-                  <Ionicons name="open-outline" size={16} color="#fff" />
-                  <Text style={styles.inlineCodeOverlayText}>Tap to open</Text>
-                </View>
-              </TouchableOpacity>
-            )}
-
-            {fileType === 'other' && (
-              <TouchableOpacity 
-                style={styles.inlineOtherContainer}
-                onPress={() => openLocalFileInAnotherApp(downloadedFileUri, materialDetail.title || 'File')}
-                activeOpacity={0.9}
-              >
-                <View style={styles.inlineOtherPreview}>
-                  <Ionicons name="document-attach" size={56} color="#6b7280" />
-                  <Text style={styles.inlineOtherName}>{materialDetail.title}</Text>
-                  <Text style={styles.inlineOtherSize}>{fileSize}</Text>
-                </View>
-                <View style={[styles.inlineOtherOpenBtn]}>
-                  <Ionicons name="open-outline" size={18} color="#4285f4" />
-                  <Text style={styles.inlineOtherOpenText}>Open File</Text>
-                </View>
-              </TouchableOpacity>
-            )}
-          </View>
-
-          {/* Downloaded Status Footer */}
-          <View style={styles.inlineViewerFooter}>
-            <View style={styles.inlineViewerStatus}>
-              <Ionicons name="checkmark-circle" size={14} color="#16a34a" />
-              <Text style={styles.inlineViewerStatusText}>Downloaded • {downloadDate}</Text>
-            </View>
-            <Text style={styles.inlineViewerSizeText}>{fileSize}</Text>
-          </View>
-        </View>
-      );
-    }
-
-    // ==========================================
-    // NOT DOWNLOADED - Ready for Offline Access Card
-    // ==========================================
-    
-    // Offline - can't download
-    if (!netInfo?.isInternetReachable) {
-      return (
-        <View style={styles.downloadPromptCard}>
-          <View style={styles.downloadPromptIconContainer}>
-            <Ionicons name="cloud-offline" size={48} color="#9ca3af" />
-          </View>
-          <Text style={styles.downloadPromptTitle}>Material Not Downloaded</Text>
-          <Text style={styles.downloadPromptText}>
-            You are currently offline. Connect to the internet to view or download this file.
-          </Text>
-        </View>
-      );
-    }
-
-    // Online - Ready for Offline Access
-    return (
-      <View style={styles.downloadPromptCard}>
-        <View style={[styles.downloadPromptIconContainer, { backgroundColor: `${fileColor}10` }]}>
-          <Ionicons name={getFileIcon(fileType) as any} size={48} color={fileColor} />
-        </View>
-        <Text style={styles.downloadPromptTitle}>Ready for Offline Access</Text>
-        <Text style={styles.downloadPromptText}>
-          Download this file to view it anytime, even without an internet connection.
-        </Text>
-        
-        {fileSize && !isDownloading && (
-          <View style={styles.downloadPromptSizeBadge}>
-            <Ionicons name="document-outline" size={14} color="#5f6368" />
-            <Text style={styles.downloadPromptSizeText}>{fileSize}</Text>
-          </View>
-        )}
-
-        {isDownloading ? (
-          <View style={styles.downloadPromptProgress}>
-            <ActivityIndicator color="#1967d2" size="small" />
-            <Text style={styles.downloadPromptProgressText}>Downloading... {downloadProgress}%</Text>
-          </View>
-        ) : (
-          <TouchableOpacity 
-            style={[styles.downloadPromptButton, { backgroundColor: fileColor }]}
-            onPress={promptDownloadOptions}
-          >
-            <Ionicons name="download" size={20} color="#fff" />
-            <Text style={styles.downloadPromptButtonText}>Download File</Text>
-          </TouchableOpacity>
-        )}
-      </View>
-    );
-  };
-
-  if (loading) {
-    if (imageError && !imageLoaded) { // Only show error if it never loaded
-      return (
-        <View style={styles.downloadPromptContainer}>
-          <View style={styles.downloadPromptContent}>
-            <Ionicons name="image" size={48} color="#5f6368" />
-            <Text style={styles.downloadPromptTitle}>Preview Unavailable</Text>
-            <Text style={styles.downloadPromptText}>
-              Unable to load image preview. Please download to view.
-            </Text>
-            <TouchableOpacity
-              style={styles.downloadPromptButton}
-              onPress={promptDownloadOptions}
-            >
-              <Ionicons name="download" size={20} color="#fff" />
-              <Text style={styles.downloadPromptButtonText}>Download File</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      );
-    }
-
-    return (
-      <View style={styles.inlineViewerContainer}>
-        <View style={styles.viewerHeader}>
-          <Text style={styles.viewerTitle}>Image Preview (Online)</Text>
-          <View style={styles.viewerActions}>
-            <TouchableOpacity style={styles.actionButton} onPress={() => setIsFullScreen(true)}>
-              <Ionicons name="expand" size={20} color="#4285f4" />
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.actionButton} onPress={promptDownloadOptions}>
-              <Ionicons name="download" size={20} color="#4285f4" />
-            </TouchableOpacity>
-          </View>
-        </View>
-        <TouchableOpacity onPress={() => setIsFullScreen(true)}>
-          <Image
-            source={{ uri: onlinePreviewUri! }}
-            style={styles.imagePreview}
-            resizeMode="contain"
-            onError={(error) => {
-              console.error('Image failed to load:', error.nativeEvent.error);
-              if (!imageLoaded) { // Only set error if it never loaded
-                setImageError(true);
-              }
-            }}
-            onLoad={() => {
-              setImageError(false);
-              setImageLoaded(true); // Mark as successfully loaded
-            }}
-          />
-        </TouchableOpacity>
-        <View style={[styles.downloadedIndicator, { backgroundColor: '#e8f0fe' }]}>
-          <Ionicons name="cloud" size={16} color="#1967d2" />
-          <Text style={[styles.downloadedText, { color: '#1967d2' }]}>
-            Viewing online • Download for offline access
-          </Text>
-        </View>
-      </View>
-    );
-  };
-
-  const formatDate = (dateString?: string) => {
-    if (!dateString) return 'N/A';
-    return new Date(dateString).toLocaleDateString(undefined, {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  };
-
-  if (loading) {
-    return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#1967d2" />
-        <Text style={styles.loadingText}>Loading material...</Text>
-      </View>
-    );
-  }
-  if (error) {
-    return (
-      <View style={styles.centeredContainer}>
-        <Text style={styles.errorText}>{error}</Text>
-        <TouchableOpacity style={styles.retryButton} onPress={fetchMaterialDetails}>
-          <Text style={styles.retryButtonText}>Retry</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
-  if (!materialDetail) {
-    return (
-      <View style={styles.centeredContainer}>
-        <Text style={styles.errorText}>Material not found.</Text>
-      </View>
-    );
-  }
-
-  return (
-    <View style={styles.container}>
-      <Stack.Screen options={{ title: materialDetail.title || 'Material Details' }} />
-
-      <ScrollView
         contentContainerStyle={styles.scrollViewContent}
         refreshControl={<RefreshControl refreshing={isRefreshing} onRefresh={handleRefresh} tintColor="#1967d2" />}
       >
         <View style={styles.headerContainer}>
-          <View style={styles.titleRow}>
-            {/* Title comes first now */}
-            <Text style={styles.materialTitle} numberOfLines={2}>
-              {materialDetail.title}
-            </Text>
-
-            {/* Material type badge comes after */}
-            {materialDetail.material_type && (
-              <View
-                style={[styles.materialTypeBadge, { backgroundColor: getMaterialColor(materialDetail.material_type) }]}
-              >
-                <Ionicons name={getMaterialIcon(materialDetail.material_type)} size={16} color="#fff" />
-                <Text style={styles.materialTypeText}>{materialDetail.material_type.toUpperCase()}</Text>
-              </View>
-            )}
-          </View>
-
-          {materialDetail.description && <Text style={styles.materialDescription}>{materialDetail.description}</Text>}
+          <Text style={styles.materialTitle}>{materialDetail.title}</Text>
+          {materialDetail.description && (
+            <Text style={styles.materialDescription}>{materialDetail.description}</Text>
+          )}
 
           {!netInfo?.isInternetReachable && (
             <View style={styles.offlineNotice}>
