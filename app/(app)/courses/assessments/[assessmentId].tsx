@@ -23,7 +23,7 @@ import {
 } from 'react-native';
 
 // Import UI components
-import { detectFileType } from '../../../../components/FileViewer';
+import { detectFileType } from '../../../../components/FileViewer/utils'; // Utility only, not a viewer
 import { SubmittedFileCard } from '../../../../components/ui';
 import DownloadProgressOverlay from '../../../../components/ui/DownloadProgressOverlay';
 import FileActionSheet from '../../../../components/ui/FileActionSheet';
@@ -429,17 +429,11 @@ export default function AssessmentDetailsScreen() {
   };
 
   // Handle tapping on a file from the files list
-  const handleFileCardPress = (file: AssessmentFile, fileIndex: number) => {
+  const handleFileCardPress = async (file: AssessmentFile, fileIndex: number) => {
     // Check if file is already downloaded
     const existingDownload = downloadedFiles.find(d => d.assessmentFileIndex === fileIndex);
     if (existingDownload) {
-      // Office formats: open externally (no in-app placeholder)
-      if (isOfficeExtension(file.extension) || isOfficeFileName(existingDownload.fileName)) {
-        openLocalFileInAnotherApp(existingDownload.uri);
-        return;
-      }
-
-      // Open file with external app
+      // Always open downloaded files externally
       await openLocalFileInAnotherApp(existingDownload.uri);
       return;
     }
@@ -2921,31 +2915,22 @@ export default function AssessmentDetailsScreen() {
         actions={[
           ...(!downloadedFileUri
             ? [
-                (() => {
-                  const name = assessmentDetail?.assessment_file_path || (assessmentDetail?.title ? `${assessmentDetail.title}` : 'Instructions');
-                  const policy = getOfflineOpenPolicy({ fileName: name });
-                  const shouldExternal = isOfficeFileName(assessmentDetail?.assessment_file_path || '') || policy.prefersExternal;
-                  return {
-                    icon: (shouldExternal ? 'open-outline' : 'eye-outline') as 'open-outline' | 'eye-outline',
-                    label: shouldExternal ? 'Download & Open in Another App' : 'Download & View in App',
-                    subtitle: policy.subtitle,
-                    onPress: async () => {
-                      if (!netInfo?.isInternetReachable) {
-                        Alert.alert('Offline Mode', 'Internet connection required to download this file.');
-                        return;
-                      }
-                      const local = await downloadToAppStorage();
-                      if (!local) return;
-                      if (shouldExternal) {
-                        await openLocalFileInAnotherApp(local);
-                      } else {
-                        openInstructionsInApp();
-                      }
-                    },
-                    color: shouldExternal ? '#4285f4' : '#16a34a',
-                    disabled: !netInfo?.isInternetReachable,
-                  };
-                })(),
+                {
+                  icon: 'open' as const,
+                  label: 'Download & Open in Another App',
+                  subtitle: 'Files are always opened with external apps.',
+                  color: '#4285f4',
+                  disabled: !netInfo?.isInternetReachable,
+                  onPress: async () => {
+                    if (!netInfo?.isInternetReachable) {
+                      Alert.alert('Offline Mode', 'Internet connection required to download this file.');
+                      return;
+                    }
+                    const local = await downloadToAppStorage();
+                    if (!local) return;
+                    await openLocalFileInAnotherApp(local);
+                  },
+                },
               ]
             : []),
           ...(downloadedFileUri ? [
