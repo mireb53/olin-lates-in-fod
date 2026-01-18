@@ -5,29 +5,28 @@ import { Stack, useLocalSearchParams } from 'expo-router';
 import * as Sharing from 'expo-sharing';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    Animated,
-    Dimensions,
-    Image,
-    Linking,
-    Platform,
-    RefreshControl,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  Animated,
+  Dimensions,
+  Linking,
+  Platform,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 // File viewing delegated to Android - no compatibility detection needed
 import {
-    getCompletedOfflineQuizzes,
-    getMaterialDetailsFromDb,
-    getMaterialFullDetailsFromDb,
-    getUnsyncedSubmissions,
-    saveMaterialFullDetailsToDb,
+  getCompletedOfflineQuizzes,
+  getMaterialDetailsFromDb,
+  getMaterialFullDetailsFromDb,
+  getUnsyncedSubmissions,
+  saveMaterialFullDetailsToDb,
 } from '@/lib/localDb';
 import { syncAllOfflineData } from '@/lib/offlineSync';
 import * as IntentLauncher from 'expo-intent-launcher';
