@@ -7,5 +7,6 @@
  * This module only exports utility functions for file type detection and MIME types.
  */
 
-export { detectFileType, getMimeType, formatFileSize } from './utils';
+export { detectFileType, formatFileSize, getMimeType } from './utils';
 export type { FileType } from './utils';
+
