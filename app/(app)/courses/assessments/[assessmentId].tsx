@@ -442,6 +442,7 @@ export default function AssessmentDetailsScreen() {
         return;
       }
 
+      // For images and viewable files, directly show the viewer
       setActiveFileViewerUri(existingDownload.uri);
       setActiveFileViewerName(existingDownload.fileName);
       setShowFileViewer(true);
@@ -454,14 +455,24 @@ export default function AssessmentDetailsScreen() {
       return;
     }
     
-    // Set selected file and show action sheet
+    // Set selected file and show action sheet for download options
     setSelectedFileForAction({ file, index: fileIndex, downloaded: null });
     setShowFileActionSheet(true);
   };
 
   const openFileActions = (file: AssessmentFile, fileIndex: number) => {
-    const existingDownload = downloadedFiles.find(d => d.assessmentFileIndex === fileIndex) || null;
-    setSelectedFileForAction({ file, index: fileIndex, downloaded: existingDownload });
+    // For images, open directly without showing the action sheet
+    const existingDownload = downloadedFiles.find(d => d.assessmentFileIndex === fileIndex);
+    if (existingDownload && (file.extension?.toLowerCase() === 'jpg' || file.extension?.toLowerCase() === 'jpeg' || file.extension?.toLowerCase() === 'png' || file.extension?.toLowerCase() === 'gif' || file.extension?.toLowerCase() === 'webp')) {
+      setActiveFileViewerUri(existingDownload.uri);
+      setActiveFileViewerName(existingDownload.fileName);
+      setShowFileViewer(true);
+      return;
+    }
+    
+    // For other files, show the action sheet
+    const download = downloadedFiles.find(d => d.assessmentFileIndex === fileIndex) || null;
+    setSelectedFileForAction({ file, index: fileIndex, downloaded: download });
     setShowFileActionSheet(true);
   };
 
