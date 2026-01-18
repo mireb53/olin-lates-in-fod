@@ -24,7 +24,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 // Import UI components
-import FileViewer, { detectFileType } from '../../../../components/FileViewer';
+import { detectFileType } from '../../../../components/FileViewer';
 import { SubmittedFileCard } from '../../../../components/ui';
 import DownloadProgressOverlay from '../../../../components/ui/DownloadProgressOverlay';
 import FileActionSheet from '../../../../components/ui/FileActionSheet';
@@ -36,7 +36,7 @@ const isLargeTablet = screenWidth >= 1024;
 const contentMaxWidth = isLargeTablet ? 900 : isTablet ? 700 : screenWidth;
 
 import { usePendingSyncNotification } from '@/hooks/usePendingSyncNotification';
-import { getOfflineOpenPolicy } from '@/lib/fileOpenPolicy';
+// Removed fileOpenPolicy - OLIN now always opens files externally
 import { useNetworkStatus } from '../../../../context/NetworkContext';
 import api, { getUserData } from '../../../../lib/api';
 import {
@@ -375,9 +375,7 @@ export default function AssessmentDetailsScreen() {
     assessmentFileIndex?: number;
   }
   const [downloadedFiles, setDownloadedFiles] = useState<DownloadedFileInfo[]>([]);
-  const [activeFileViewerUri, setActiveFileViewerUri] = useState<string | null>(null);
-  const [activeFileViewerName, setActiveFileViewerName] = useState<string>('');
-  const [showFileViewer, setShowFileViewer] = useState(false);
+  // Removed in-app viewer states - OLIN now delegates file viewing to external apps
   const [currentDownloadingFileIndex, setCurrentDownloadingFileIndex] = useState<number | null>(null);
 
   // State for file action sheet (when user taps download icon on a file)
@@ -442,10 +440,8 @@ export default function AssessmentDetailsScreen() {
         return;
       }
 
-      // For images and viewable files, directly show the viewer
-      setActiveFileViewerUri(existingDownload.uri);
-      setActiveFileViewerName(existingDownload.fileName);
-      setShowFileViewer(true);
+      // Open file with external app
+      await openLocalFileInAnotherApp(existingDownload.uri);
       return;
     }
     
@@ -461,12 +457,10 @@ export default function AssessmentDetailsScreen() {
   };
 
   const openFileActions = (file: AssessmentFile, fileIndex: number) => {
-    // For images, open directly without showing the action sheet
+    // For images, open directly with external app
     const existingDownload = downloadedFiles.find(d => d.assessmentFileIndex === fileIndex);
     if (existingDownload && (file.extension?.toLowerCase() === 'jpg' || file.extension?.toLowerCase() === 'jpeg' || file.extension?.toLowerCase() === 'png' || file.extension?.toLowerCase() === 'gif' || file.extension?.toLowerCase() === 'webp')) {
-      setActiveFileViewerUri(existingDownload.uri);
-      setActiveFileViewerName(existingDownload.fileName);
-      setShowFileViewer(true);
+      openLocalFileInAnotherApp(existingDownload.uri);
       return;
     }
     
@@ -525,7 +519,7 @@ export default function AssessmentDetailsScreen() {
   const downloadFileToApp = async (
     file: AssessmentFile,
     fileIndex: number,
-    opts?: { afterDownload?: 'view' | 'external' }
+    opts?: { afterDownload?: 'open' }
   ) => {
     setShowFileActionSheet(false);
     setCurrentDownloadingFileIndex(fileIndex);
@@ -578,19 +572,27 @@ export default function AssessmentDetailsScreen() {
           setDownloadedFiles(prev => [...prev, newDownloadedFile]);
           setDownloadStatus('complete');
 
-          if (opts?.afterDownload === 'external') {
-            await openLocalFileInAnotherApp(result.uri);
-          } else if (opts?.afterDownload === 'view') {
-            setActiveFileViewerUri(result.uri);
-            setActiveFileViewerName(file.original_name);
-            setShowFileViewer(true);
+          // After download, open file with external app if requested
+          if (opts?.afterDownload === 'open') {
+            setTimeout(async () => {
+              setShowDownloadOverlay(false);
+              await openLocalFileInAnotherApp(result.uri);
+            }, 800);
+          } else {
+            setTimeout(() => {
+              setShowDownloadOverlay(false);
+              Alert.alert(
+                'Download Complete',
+                `"${file.original_name}" saved for offline access.`,
+                [
+                  { text: 'Done', style: 'cancel' },
+                  { text: 'Open File', onPress: () => openLocalFileInAnotherApp(result.uri) },
+                ]
+              );
+            }, 1200);
           }
           
-          console.log('File downloaded to app:', result.uri);
-          
-          setTimeout(() => {
-            setShowDownloadOverlay(false);
-          }, 1500);
+          console.log('File downloaded:', result.uri);
         } else {
           throw new Error('Downloaded file is corrupted or empty.');
         }
@@ -598,7 +600,7 @@ export default function AssessmentDetailsScreen() {
         throw new Error('Download failed - no result URI.');
       }
     } catch (error: any) {
-      console.error('Error downloading file to app:', error);
+      console.error('Error downloading file:', error);
       setDownloadStatus('error');
       setTimeout(() => {
         setShowDownloadOverlay(false);
@@ -990,15 +992,8 @@ export default function AssessmentDetailsScreen() {
 
   const openInstructionsInApp = () => {
     if (!downloadedFileUri) return;
-
-    if (isOfficeFileName(assessmentDetail?.assessment_file_path || '')) {
-      handleOpenFile();
-      return;
-    }
-
-    setActiveFileViewerUri(downloadedFileUri);
-    setActiveFileViewerName('Instructions File');
-    setShowFileViewer(true);
+    // Open file with external app
+    openLocalFileInAnotherApp(downloadedFileUri);
   };
 
   const handleDeleteDownload = async () => {
@@ -2245,18 +2240,12 @@ export default function AssessmentDetailsScreen() {
                           onPress={() => {
                             const downloadedFile = downloadedFiles.find(d => d.assessmentFileIndex === index);
                             if (downloadedFile) {
-                              if (isOfficeExtension(file.extension) || isOfficeFileName(downloadedFile.fileName)) {
-                                openLocalFileInAnotherApp(downloadedFile.uri);
-                                return;
-                              }
-                              setActiveFileViewerUri(downloadedFile.uri);
-                              setActiveFileViewerName(downloadedFile.fileName);
-                              setShowFileViewer(true);
+                              openLocalFileInAnotherApp(downloadedFile.uri);
                             }
                           }}
                         >
                           <Ionicons
-                            name={(isOfficeExtension(file.extension) || isOfficeFileName(file.original_name)) ? 'open-outline' : 'eye-outline'}
+                            name="open-outline"
                             size={22}
                             color="#16a34a"
                           />
@@ -3043,26 +3032,11 @@ export default function AssessmentDetailsScreen() {
         isCached={!!selectedFileForAction?.downloaded}
         actions={[
           ...(selectedFileForAction?.downloaded ? [
-            ...(!isOfficeExtension(selectedFileForAction.file.extension) && !isOfficeFileName(selectedFileForAction.file.original_name)
-              ? [{
-                  icon: 'eye-outline' as const,
-                  label: 'View in App',
-                  subtitle: 'Open inside the app',
-                  onPress: () => {
-                    const df = selectedFileForAction.downloaded;
-                    if (!df) return;
-                    setShowFileActionSheet(false);
-                    setActiveFileViewerUri(df.uri);
-                    setActiveFileViewerName(df.fileName);
-                    setShowFileViewer(true);
-                  },
-                  color: '#16a34a',
-                }]
-              : []),
+            // File is downloaded - show Open File option
             {
               icon: 'open-outline' as const,
-              label: 'Open in Another App',
-              subtitle: 'Use another app to open',
+              label: 'Open File',
+              subtitle: 'Open with another app',
               onPress: async () => {
                 const df = selectedFileForAction.downloaded;
                 if (!df) return;
@@ -3111,47 +3085,22 @@ export default function AssessmentDetailsScreen() {
               color: '#ef4444',
             },
           ] : [
-            (() => {
-              if (!selectedFileForAction) {
-                return {
-                  icon: 'download-outline' as const,
-                  label: 'Download',
-                  onPress: () => {},
-                  disabled: true,
-                } as any;
-              }
-              const policy = getOfflineOpenPolicy({
-                fileName: selectedFileForAction.file.original_name,
-                fileSizeBytes: selectedFileForAction.file.size,
-              });
-              const shouldExternal = isOfficeExtension(selectedFileForAction.file.extension) || policy.prefersExternal;
-              return {
-                icon: (shouldExternal ? 'open-outline' : 'eye-outline') as 'open-outline' | 'eye-outline',
-                label: shouldExternal ? 'Download & Open in Another App' : 'Download & View in App',
-                subtitle: policy.subtitle,
-                onPress: () => {
-                  if (!netInfo?.isInternetReachable) {
-                    Alert.alert('Offline Mode', 'Internet connection required to download this file.');
-                    return;
-                  }
-                  downloadFileToApp(selectedFileForAction.file, selectedFileForAction.index, {
-                    afterDownload: shouldExternal ? 'external' : 'view',
-                  });
-                },
-                color: shouldExternal ? '#4285f4' : '#16a34a',
-                disabled: !netInfo?.isInternetReachable,
-              };
-            })(),
+            // Not downloaded - show Download options
             {
-              icon: 'phone-portrait-outline' as const,
-              label: 'Save to App',
-              subtitle: 'Access offline within the app',
+              icon: 'download-outline' as const,
+              label: 'Download for Offline',
+              subtitle: 'Save for offline access',
               onPress: () => {
+                if (!netInfo?.isInternetReachable) {
+                  Alert.alert('Offline Mode', 'Internet connection required to download this file.');
+                  return;
+                }
                 if (selectedFileForAction) {
                   downloadFileToApp(selectedFileForAction.file, selectedFileForAction.index);
                 }
               },
-              color: '#4285f4',
+              color: '#16a34a',
+              disabled: !netInfo?.isInternetReachable,
             },
             {
               icon: 'folder-outline' as const,
@@ -3182,49 +3131,7 @@ export default function AssessmentDetailsScreen() {
         }}
       />
 
-      {/* In-App FileViewer Modal */}
-      <Modal
-        visible={showFileViewer}
-        animationType="slide"
-        presentationStyle="fullScreen"
-        onRequestClose={() => setShowFileViewer(false)}
-      >
-        <SafeAreaView style={styles.fileViewerContainer}>
-          <View style={styles.fileViewerHeader}>
-            <TouchableOpacity
-              style={styles.fileViewerCloseButton}
-              onPress={() => setShowFileViewer(false)}
-            >
-              <Ionicons name="close" size={24} color="#1f2937" />
-            </TouchableOpacity>
-            <Text style={styles.fileViewerTitle} numberOfLines={1}>
-              {activeFileViewerName}
-            </Text>
-            <TouchableOpacity
-              style={styles.fileViewerShareButton}
-              onPress={async () => {
-                if (activeFileViewerUri && await Sharing.isAvailableAsync()) {
-                  await Sharing.shareAsync(activeFileViewerUri);
-                }
-              }}
-            >
-              <Ionicons name="share-outline" size={24} color="#1f2937" />
-            </TouchableOpacity>
-          </View>
-          <View style={styles.fileViewerContent}>
-            {activeFileViewerUri && (
-              <FileViewer
-                uri={activeFileViewerUri}
-                fileName={activeFileViewerName}
-                isCached={true}
-                onClose={() => setShowFileViewer(false)}
-                fullscreen={true}
-                isOnline={netInfo?.isInternetReachable || false}
-              />
-            )}
-          </View>
-        </SafeAreaView>
-      </Modal>
+      {/* File viewer removed - OLIN delegates file viewing to external apps */}
     </View>
   );
 }
