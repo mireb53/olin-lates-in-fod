@@ -1,16 +1,12 @@
 // app/(app)/notifications.tsx
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
-import * as FileSystem from 'expo-file-system/legacy';
 import * as Haptics from 'expo-haptics';
-import * as IntentLauncher from 'expo-intent-launcher';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import * as Sharing from 'expo-sharing';
 import React, { useCallback, useRef, useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
-    Animated,
     Dimensions,
     FlatList,
     Platform,
@@ -23,10 +19,8 @@ import {
 import { GestureHandlerRootView, Swipeable } from 'react-native-gesture-handler';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import FileActionSheet from '../../components/ui/FileActionSheet';
 import { useNetworkStatus } from '../../context/NetworkContext';
 import { API_BASE_URL, getAuthorizationHeader, getUserData } from '../../lib/api';
-import { getOfflineOpenPolicy } from '../../lib/fileOpenPolicy';
 
 const { width: screenWidth } = Dimensions.get('window');
 const isTablet = screenWidth >= 768;
@@ -51,153 +45,9 @@ export default function NotificationsScreen() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [downloadingId, setDownloadingId] = useState<string | null>(null);
-  const [downloadProgress, setDownloadProgress] = useState<number>(0);
   const [selectedNotifications, setSelectedNotifications] = useState<Set<string>>(new Set());
   const [selectionMode, setSelectionMode] = useState(false);
   const swipeableRefs = useRef<Map<string, Swipeable | null>>(new Map());
-
-  const [attachmentSheetVisible, setAttachmentSheetVisible] = useState(false);
-  const [attachmentMaterial, setAttachmentMaterial] = useState<any | null>(null);
-  const [attachmentFileName, setAttachmentFileName] = useState<string>('');
-  const [attachmentFilePath, setAttachmentFilePath] = useState<string>('');
-  const [attachmentLocalUri, setAttachmentLocalUri] = useState<string | null>(null);
-
-  const getMimeType = (filePath: string): string => {
-    const extension = (filePath.split('.').pop() || '').toLowerCase();
-    const mimeMap: Record<string, string> = {
-      pdf: 'application/pdf',
-      doc: 'application/msword',
-      docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      xls: 'application/vnd.ms-excel',
-      xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      ppt: 'application/vnd.ms-powerpoint',
-      pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-      txt: 'text/plain',
-      jpg: 'image/jpeg',
-      jpeg: 'image/jpeg',
-      png: 'image/png',
-      gif: 'image/gif',
-      webp: 'image/webp',
-      mp3: 'audio/mpeg',
-      mp4: 'video/mp4',
-    };
-    return mimeMap[extension] || 'application/octet-stream';
-  };
-
-  const openLocalFileInAnotherApp = async (localUri: string, fileName: string) => {
-    if (!localUri) return;
-    try {
-      if (Platform.OS === 'android') {
-        const contentUri = await FileSystem.getContentUriAsync(localUri);
-        await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
-          data: contentUri,
-          flags: 1,
-          type: getMimeType(fileName || localUri),
-        });
-        return;
-      }
-
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(localUri, { dialogTitle: `Open ${fileName}` });
-      } else {
-        Alert.alert('Not available', 'File opening is not available on this device.');
-      }
-    } catch (e) {
-      Alert.alert('Error', 'Could not open the file.');
-    }
-  };
-
-  const saveFileToDeviceAndroid = async (sourceFileUri: string, targetFileName: string, mimeType: string) => {
-    const permissions = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
-    if (!permissions.granted) {
-      throw new Error('Save cancelled.');
-    }
-
-    const directoryUri = permissions.directoryUri;
-    const destUri = await FileSystem.StorageAccessFramework.createFileAsync(directoryUri, targetFileName, mimeType);
-    const base64 = await FileSystem.readAsStringAsync(sourceFileUri, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
-    await FileSystem.StorageAccessFramework.writeAsStringAsync(destUri, base64, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
-  };
-
-  const exportLocalFileToDevice = async (localUri: string, suggestedFileName: string) => {
-    if (!localUri) return;
-    try {
-      if (Platform.OS === 'android') {
-        await saveFileToDeviceAndroid(localUri, suggestedFileName, getMimeType(suggestedFileName));
-        Alert.alert('Saved', 'File saved to your selected folder.');
-        return;
-      }
-
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(localUri, {
-          dialogTitle: 'Save file',
-          mimeType: getMimeType(suggestedFileName),
-        });
-      } else {
-        Alert.alert('Error', 'Sharing is not available on this device.');
-      }
-    } catch (e: any) {
-      Alert.alert('Error', e?.message || 'Failed to save file.');
-    }
-  };
-
-  const downloadMaterialToApp = async (material: any): Promise<string> => {
-    const authHeader = await getAuthorizationHeader();
-    const downloadUrl = `${API_BASE_URL}/materials/${material.id}/view?t=${Date.now()}`;
-
-    const fileExtension = (material.file_path || '').split('.').pop();
-    const sanitizedTitle = String(material.title || 'Material').replace(/[^a-zA-Z0-9]/g, '_');
-    const fileName = `${sanitizedTitle}_${material.id}${fileExtension ? `.${fileExtension}` : ''}`;
-    const localUri = (FileSystem.documentDirectory || FileSystem.cacheDirectory || '') + fileName;
-
-    const downloadResumable = FileSystem.createDownloadResumable(
-      downloadUrl,
-      localUri,
-      { headers: { Authorization: String(authHeader || '') } },
-      ({ totalBytesWritten, totalBytesExpectedToWrite }) => {
-        if (totalBytesExpectedToWrite > 0) {
-          const progress = totalBytesWritten / totalBytesExpectedToWrite;
-          setDownloadProgress(Math.round(progress * 100));
-        }
-      }
-    );
-
-    const result = await downloadResumable.downloadAsync();
-    if (!result?.uri) throw new Error('Download failed.');
-
-    const info = await FileSystem.getInfoAsync(result.uri);
-    if (!info.exists || !('size' in info) || !info.size || info.size <= 0) {
-      throw new Error('Downloaded file is empty.');
-    }
-
-    // Quick PDF integrity check
-    const ext = (fileExtension || '').toLowerCase();
-    if (ext === 'pdf') {
-      try {
-        const head = await FileSystem.readAsStringAsync(
-          result.uri,
-          {
-            encoding: (FileSystem as any).EncodingType?.UTF8 || 'utf8',
-            length: 8,
-            position: 0,
-          } as any
-        );
-        if (typeof head === 'string' && !head.startsWith('%PDF')) {
-          await FileSystem.deleteAsync(result.uri, { idempotent: true });
-          throw new Error('Downloaded file is not a valid PDF. Please retry.');
-        }
-      } catch (e: any) {
-        if (e?.message?.includes('not a valid PDF')) throw e;
-      }
-    }
-
-    return result.uri;
-  };
 
   const loadNotifications = useCallback(async () => {
     try {
@@ -424,49 +274,6 @@ export default function NotificationsScreen() {
     );
   };
 
-  const handleDownloadAttachment = async (item: Notification) => {
-    if (!netInfo?.isInternetReachable) {
-      Alert.alert('Offline Mode', 'File downloading requires an internet connection.');
-      return;
-    }
-    if (downloadingId) return;
-
-    setDownloadingId(item.id);
-    setDownloadProgress(0);
-
-    try {
-      const authHeader = await getAuthorizationHeader();
-      const materialResponse = await fetch(`${API_BASE_URL}/materials/${item.item_id}`, {
-        headers: { 'Authorization': String(authHeader || '') }
-      });
-
-      if (!materialResponse.ok) throw new Error('Could not fetch material details.');
-      
-      const materialData = await materialResponse.json();
-      const material = materialData.material;
-
-      if (!material || !material.file_path) throw new Error('No file associated with this material.');
-
-      const fileExtension = material.file_path.split('.').pop();
-      const sanitizedTitle = material.title.replace(/[^a-zA-Z0-9]/g, '_');
-      const fileName = `${sanitizedTitle}_${material.id}${fileExtension ? `.${fileExtension}` : ''}`;
-      const localUri = FileSystem.documentDirectory + fileName;
-      
-      const fileInfo = await FileSystem.getInfoAsync(localUri);
-
-      setAttachmentMaterial(material);
-      setAttachmentFileName(fileName);
-      setAttachmentFilePath(material.file_path);
-      setAttachmentLocalUri(fileInfo.exists ? localUri : null);
-      setAttachmentSheetVisible(true);
-    } catch (err: any) {
-      Alert.alert('Download Failed', err.message || 'Could not download the file. Please try again.');
-    } finally {
-      setDownloadingId(null);
-      setDownloadProgress(0);
-    }
-  };
-
   const getNotificationIcon = (type: string) => {
     switch(type) {
       case 'material': return 'document-text';
@@ -514,26 +321,6 @@ export default function NotificationsScreen() {
   };
 
   const unreadCount = notifications.filter(n => !n.read).length;
-
-  const renderRightActions = (progress: Animated.AnimatedInterpolation<number>, dragX: Animated.AnimatedInterpolation<number>, itemId: string) => {
-    const trans = dragX.interpolate({
-      inputRange: [-100, 0],
-      outputRange: [0, 100],
-      extrapolate: 'clamp',
-    });
-    
-    return (
-      <Animated.View style={[styles.deleteActionContainer, { transform: [{ translateX: trans }] }]}>
-        <TouchableOpacity 
-          style={styles.deleteAction}
-          onPress={() => confirmDeleteNotification(itemId)}
-        >
-          <Ionicons name="trash-outline" size={24} color="#ffffff" />
-          <Text style={styles.deleteActionText}>Delete</Text>
-        </TouchableOpacity>
-      </Animated.View>
-    );
-  };
 
   const renderNotificationItem = ({ item }: { item: Notification }) => {
     const isSelected = selectedNotifications.has(item.id);
@@ -596,35 +383,7 @@ export default function NotificationsScreen() {
             </View>
           </View>
 
-          {/* Actions */}
-          {item.type === 'material' && item.has_file && (
-            <View style={styles.actionsContainer}>
-              {downloadingId === item.id ? (
-                <View style={styles.progressContainer}>
-                  <ActivityIndicator size="small" color="#1967d2" />
-                  <Text style={styles.progressText}>{downloadProgress}%</Text>
-                </View>
-              ) : (
-                <TouchableOpacity
-                  style={[
-                    styles.downloadButton,
-                    (!!downloadingId || !netInfo?.isInternetReachable) && styles.downloadButtonDisabled
-                  ]}
-                  onPress={(e) => {
-                    e.stopPropagation();
-                    handleDownloadAttachment(item);
-                  }}
-                  disabled={!!downloadingId || !netInfo?.isInternetReachable}
-                >
-                  <Ionicons 
-                    name="download-outline" 
-                    size={22} 
-                    color={!!downloadingId || !netInfo?.isInternetReachable ? "#9aa0a6" : "#1967d2"} 
-                  />
-                </TouchableOpacity>
-              )}
-            </View>
-          )}
+
         </View>
       </TouchableOpacity>
     );
@@ -635,17 +394,9 @@ export default function NotificationsScreen() {
     }
 
     return (
-      <Swipeable
-        ref={(ref) => {
-          swipeableRefs.current.set(item.id, ref);
-        }}
-        renderRightActions={(progress, dragX) => renderRightActions(progress, dragX, item.id)}
-        rightThreshold={40}
-        friction={2}
-        overshootRight={false}
-      >
+      <View>
         {notificationContent}
-      </Swipeable>
+      </View>
     );
   };
 
@@ -789,108 +540,6 @@ export default function NotificationsScreen() {
             showsVerticalScrollIndicator={false}
           />
         )}
-
-        <FileActionSheet
-          visible={attachmentSheetVisible}
-          onClose={() => setAttachmentSheetVisible(false)}
-          fileName={attachmentFileName || attachmentMaterial?.title}
-          fileType={(attachmentFilePath || attachmentFileName).split('.').pop() || 'file'}
-          isCached={!!attachmentLocalUri}
-          actions={
-            attachmentMaterial
-              ? [
-                  (() => {
-                    const policy = getOfflineOpenPolicy({ fileName: attachmentFilePath || attachmentFileName });
-                    const label = attachmentLocalUri ? 'Open in Another App' : 'Download & Open in Another App';
-                    return {
-                      icon: 'open-outline' as const,
-                      label,
-                      subtitle: policy.subtitle,
-                      onPress: async () => {
-                        if (!attachmentMaterial) return;
-                        try {
-                          setAttachmentSheetVisible(false);
-                          const uri = attachmentLocalUri || (await downloadMaterialToApp(attachmentMaterial));
-                          setAttachmentLocalUri(uri);
-                          await openLocalFileInAnotherApp(uri, attachmentFileName);
-                        } catch (e: any) {
-                          Alert.alert('Failed', e?.message || 'Could not open the file.');
-                        }
-                      },
-                      color: '#4285f4',
-                      disabled: !netInfo?.isInternetReachable && !attachmentLocalUri,
-                    };
-                  })(),
-                  {
-                    icon: 'phone-portrait-outline' as const,
-                    label: 'Save to App',
-                    subtitle: 'Download for offline access',
-                    onPress: async () => {
-                      if (!attachmentMaterial) return;
-                      if (attachmentLocalUri) {
-                        Alert.alert('Already Downloaded', 'This file is already saved in the app.');
-                        return;
-                      }
-                      if (!netInfo?.isInternetReachable) {
-                        Alert.alert('Offline Mode', 'Internet connection required to download this file.');
-                        return;
-                      }
-                      try {
-                        setAttachmentSheetVisible(false);
-                        const uri = await downloadMaterialToApp(attachmentMaterial);
-                        setAttachmentLocalUri(uri);
-                        Alert.alert('Saved', 'File saved to the app.');
-                      } catch (e: any) {
-                        Alert.alert('Download Failed', e?.message || 'Could not download the file.');
-                      }
-                    },
-                    color: '#1967d2',
-                    disabled: !!attachmentLocalUri,
-                  },
-                  {
-                    icon: 'folder-outline' as const,
-                    label: 'Save to Device',
-                    subtitle: Platform.OS === 'android' ? 'Choose Downloads/Documents folder' : 'Export using share sheet',
-                    onPress: async () => {
-                      if (!attachmentMaterial) return;
-                      try {
-                        setAttachmentSheetVisible(false);
-                        const uri = attachmentLocalUri || (await downloadMaterialToApp(attachmentMaterial));
-                        setAttachmentLocalUri(uri);
-                        await exportLocalFileToDevice(uri, attachmentFileName);
-                      } catch (e: any) {
-                        Alert.alert('Failed', e?.message || 'Could not save the file.');
-                      }
-                    },
-                    color: '#16a34a',
-                    disabled: !netInfo?.isInternetReachable && !attachmentLocalUri,
-                  },
-                  ...(attachmentLocalUri
-                    ? [
-                        {
-                          icon: 'trash-outline' as const,
-                          label: 'Remove Download',
-                          subtitle: 'Delete from app storage',
-                          onPress: async () => {
-                            try {
-                              setAttachmentSheetVisible(false);
-                              if (attachmentLocalUri) {
-                                await FileSystem.deleteAsync(attachmentLocalUri, { idempotent: true });
-                              }
-                              setAttachmentLocalUri(null);
-                              Alert.alert('Removed', 'File removed from the app.');
-                            } catch {
-                              Alert.alert('Error', 'Could not remove the file.');
-                            }
-                          },
-                          color: '#ef4444',
-                        },
-                      ]
-                    : []),
-                ]
-              : []
-          }
-        />
       </SafeAreaView>
     </GestureHandlerRootView>
   );
