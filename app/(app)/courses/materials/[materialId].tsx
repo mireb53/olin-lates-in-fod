@@ -1372,14 +1372,16 @@ export default function MaterialDetailsScreen() {
           const fileExt = (materialDetail.file_path.split('.').pop() || '').toLowerCase();
           if (fileExt === 'pdf') {
             try {
+              // Read more bytes to handle PDFs with leading whitespace or byte-order marks
               const head = await FileSystem.readAsStringAsync(result.uri, {
                 encoding: (FileSystem as any).EncodingType?.UTF8 || 'utf8',
-                length: 8,
+                length: 16,
                 position: 0,
               } as any);
-              if (typeof head === 'string' && !head.startsWith('%PDF')) {
+              // Check for PDF signature - allow some whitespace/BOM before %PDF
+              if (typeof head === 'string' && !head.includes('%PDF')) {
                 await FileSystem.deleteAsync(result.uri, { idempotent: true });
-                throw new Error('Downloaded file is not a valid PDF. Please retry.');
+                throw new Error('Downloaded file is not a valid PDF. The server may have returned an error page.');
               }
             } catch (e: any) {
               if (e?.message?.includes('not a valid PDF')) throw e;
@@ -2924,8 +2926,8 @@ export default function MaterialDetailsScreen() {
                   const openExternally = isOfficeFileName(materialDetail?.file_path || '') || policy.prefersExternal;
                   return {
                     icon: (openExternally ? 'open-outline' : 'eye-outline') as const,
-                    label: openExternally ? 'Download & Open in Another App' : 'Download & View in App',
-                    subtitle: policy.subtitle,
+                    label: openExternally ? 'Download & Open Externally' : 'Download & View in App',
+                    subtitle: openExternally ? 'Opens in Word, Excel, etc.' : 'View inside OLIN app',
                     onPress: async () => {
                       const local = await downloadToAppStorage();
                       if (openExternally && local) {
@@ -2941,15 +2943,29 @@ export default function MaterialDetailsScreen() {
                   };
                 })(),
               ]
-            : []),
-          {
-            icon: 'phone-portrait-outline',
-            label: 'Save to App',
-            subtitle: 'Access offline within the app',
-            onPress: downloadToAppStorage,
-            color: '#1967d2',
-            disabled: !!downloadedFileUri,
-          },
+            : [
+                (() => {
+                  const name = getLegacySingleFileViewerName();
+                  const policy = getOfflineOpenPolicy({ fileName: name });
+                  const openExternally = isOfficeFileName(materialDetail?.file_path || '') || policy.prefersExternal;
+                  return {
+                    icon: (openExternally ? 'open-outline' : 'eye-outline') as const,
+                    label: openExternally ? 'Open Externally' : 'View in App',
+                    subtitle: openExternally ? 'Open in Word, Excel, etc.' : 'Open inside OLIN app',
+                    onPress: async () => {
+                      if (openExternally && downloadedFileUri) {
+                        await openLocalFileInAnotherApp(downloadedFileUri, name);
+                      } else if (downloadedFileUri) {
+                        setActiveFileViewerUri(downloadedFileUri);
+                        setActiveFileViewerName(name);
+                        setShowFileViewer(true);
+                      }
+                    },
+                    color: openExternally ? '#4285f4' : '#16a34a',
+                    disabled: false,
+                  };
+                })(),
+              ]),
           {
             icon: 'folder-outline',
             label: 'Save to Device',
@@ -3010,8 +3026,8 @@ export default function MaterialDetailsScreen() {
                   if (isDownloaded && df) {
                     return {
                       icon: (shouldExternal ? 'open-outline' : 'eye-outline') as const,
-                      label: shouldExternal ? 'Open in Another App' : 'Open in App',
-                      subtitle: shouldExternal ? 'Open using another app' : 'Open inside the app',
+                      label: shouldExternal ? 'Open Externally' : 'View in App',
+                      subtitle: shouldExternal ? 'Open in Word, Excel, etc.' : 'View inside OLIN app',
                       onPress: async () => {
                         if (shouldExternal) {
                           await openLocalFileInAnotherApp(df.uri, df.fileName);
@@ -3028,8 +3044,8 @@ export default function MaterialDetailsScreen() {
 
                   return {
                     icon: (shouldExternal ? 'open-outline' : 'eye-outline') as const,
-                    label: shouldExternal ? 'Download & Open in Another App' : 'Download & View in App',
-                    subtitle: policy.subtitle,
+                    label: shouldExternal ? 'Download & Open Externally' : 'Download & View in App',
+                    subtitle: shouldExternal ? 'Opens in Word, Excel, etc.' : 'View inside OLIN app',
                     onPress: () => {
                       if (!netInfo?.isInternetReachable) {
                         showToast('Internet required to download.', 'warning');
@@ -3043,20 +3059,6 @@ export default function MaterialDetailsScreen() {
                     disabled: !netInfo?.isInternetReachable,
                   };
                 })(),
-                {
-                  icon: 'phone-portrait-outline' as const,
-                  label: 'Save to App',
-                  subtitle: 'Download for offline access',
-                  onPress: () => {
-                    if (!netInfo?.isInternetReachable) {
-                      showToast('Internet required to download.', 'warning');
-                      return;
-                    }
-                    downloadFileToApp(selectedFileForAction.file, selectedFileForAction.index);
-                  },
-                  color: '#1967d2',
-                  disabled: !!downloadedFiles.find((d) => d.materialFileIndex === selectedFileForAction.index) || !netInfo?.isInternetReachable,
-                },
                 {
                   icon: 'folder-outline' as const,
                   label: 'Save to Device',

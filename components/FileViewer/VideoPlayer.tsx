@@ -73,7 +73,7 @@ export default function VideoPlayer({
   const [isFullscreen, setIsFullscreen] = useState(initialFullscreen);
   const [showControls, setShowControls] = useState(true);
   const [showSpeedMenu, setShowSpeedMenu] = useState(false);
-  const [isBuffering, setIsBuffering] = useState(false);
+  const [isBuffering, setIsBuffering] = useState(true); // Start as buffering until loaded
   const [hasError, setHasError] = useState(false);
   const [isSeeking, setIsSeeking] = useState(false);
   const [progressSliderWidth, setProgressSliderWidth] = useState(0);

@@ -122,8 +122,8 @@ export default function CodeViewer({
       setIsTruncated(false);
       setTruncatedInfo(null);
 
-      const MAX_PREVIEW_BYTES = 1024 * 1024; // 1MB
-      const TRUNCATED_PREVIEW_BYTES = 256 * 1024; // 256KB
+      const MAX_PREVIEW_BYTES = 512 * 1024; // 512KB max for code preview
+      const TRUNCATED_PREVIEW_BYTES = 256 * 1024; // 256KB truncated preview
 
       // Try to read from local file first (if cached)
       const isLocalUri =
@@ -139,6 +139,11 @@ export default function CodeViewer({
         }
         const sizeBytes = 'size' in info && typeof info.size === 'number' ? info.size : undefined;
 
+        // Reject very large files outright
+        if (typeof sizeBytes === 'number' && sizeBytes > 5 * 1024 * 1024) {
+          throw new Error(`This file is too large (${formatFileSize(sizeBytes)}) to preview as code. Please open it in another app.`);
+        }
+
         let content: string;
         if (typeof sizeBytes === 'number' && sizeBytes > MAX_PREVIEW_BYTES) {
           // Prefer a truncated preview for big text/code files.
@@ -151,6 +156,16 @@ export default function CodeViewer({
                 length: TRUNCATED_PREVIEW_BYTES,
               } as any
             );
+            // Check if content looks like binary/gibberish
+            const binaryChars = content.split('').filter(c => {
+              const code = c.charCodeAt(0);
+              return code < 32 && code !== 9 && code !== 10 && code !== 13;
+            }).length;
+            const binaryRatio = binaryChars / Math.min(content.length, 1000);
+            if (binaryRatio > 0.3) {
+              throw new Error('This file appears to be binary data and cannot be displayed as text. Please open it in a specialized app.');
+            }
+            
             setIsTruncated(true);
             setTruncatedInfo({ shownBytes: TRUNCATED_PREVIEW_BYTES, totalBytes: sizeBytes });
             content += `\n\n… (Preview truncated. File is ${formatFileSize(sizeBytes)}. Open in another app for the full file.)`;
@@ -161,6 +176,16 @@ export default function CodeViewer({
           content = await FileSystem.readAsStringAsync(uri, {
             encoding: FileSystem.EncodingType.UTF8,
           });
+          // Check for binary content in smaller files too
+          const sample = content.substring(0, 1000);
+          const binaryChars = sample.split('').filter(c => {
+            const code = c.charCodeAt(0);
+            return code < 32 && code !== 9 && code !== 10 && code !== 13;
+          }).length;
+          const binaryRatio = binaryChars / sample.length;
+          if (binaryRatio > 0.3) {
+            throw new Error('This file appears to be binary data and cannot be displayed as text. Please open it in a specialized app.');
+          }
         }
 
         setCode(content);
