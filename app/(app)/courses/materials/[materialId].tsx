@@ -35,6 +35,7 @@ import DownloadProgressOverlay from '../../../../components/ui/DownloadProgressO
 import FileActionSheet from '../../../../components/ui/FileActionSheet';
 import { useNetworkStatus } from '../../../../context/NetworkContext';
 import api, { getAuthorizationHeader, getUserData, initializeAuth } from '../../../../lib/api';
+import { saveFileToDownloadsAuto } from '../../../../lib/downloadUtils';
 
 // Downloaded file tracking interface
 interface DownloadedFileInfo {
@@ -863,27 +864,35 @@ export default function MaterialDetailsScreen() {
 
       const result = await downloadResumable.downloadAsync();
 
+      if (!result || result.status !== 200) {
+        throw new Error(`Download failed, server returned status ${result?.status || 'unknown'}`);
+      }
+
       if (result?.uri) {
         setDownloadStatus('processing');
         const fileInfo = await FileSystem.getInfoAsync(result.uri);
         
         if (fileInfo.exists && 'size' in fileInfo && fileInfo.size > 0) {
           // Basic PDF integrity check (helps catch cases where HTML/error page was downloaded)
-          const isPdf = (file.extension || '').toLowerCase() === 'pdf' || (detectFileType(file.original_name) || '') === 'pdf';
+          const ext = (file.extension || getFileExtension(file.original_name)).toLowerCase();
+          const isPdf = ext === 'pdf';
           if (isPdf) {
             try {
+              // Read more bytes and allow leading whitespace/BOM
               const head = await FileSystem.readAsStringAsync(result.uri, {
                 encoding: (FileSystem as any).EncodingType?.UTF8 || 'utf8',
-                length: 8,
+                length: 1024,
                 position: 0,
               } as any);
-              if (typeof head === 'string' && !head.startsWith('%PDF')) {
+              const normalized = typeof head === 'string' ? head.replace(/^\uFEFF/, '').trimStart() : '';
+
+              // Some valid PDFs can have whitespace/BOM before %PDF, so we search within the first chunk
+              if (!normalized.includes('%PDF')) {
                 await FileSystem.deleteAsync(result.uri, { idempotent: true });
-                throw new Error('Downloaded file is not a valid PDF. Please retry.');
+                throw new Error('Downloaded file is not a valid PDF. The server may have returned an error page.');
               }
             } catch (e: any) {
-              // If the platform doesn’t support partial reads, ignore and let the viewer decide.
-              // If we threw our own message above, rethrow it.
+              // If partial reads aren't supported, ignore and let external viewer decide.
               if (e?.message?.includes('not a valid PDF')) throw e;
             }
           }
@@ -1067,6 +1076,87 @@ export default function MaterialDetailsScreen() {
 
     } catch (error: any) {
       console.error('Error downloading file to device:', error);
+      setDownloadStatus('error');
+      setTimeout(() => {
+        setShowDownloadOverlay(false);
+        Alert.alert('Download Failed', error?.message || 'Failed to save file. Please try again.');
+      }, 2000);
+    } finally {
+      setIsDownloading(false);
+      setDownloadProgress(0);
+      setCurrentDownloadingFileIndex(null);
+    }
+  };
+
+  // Auto-save file to device without folder picker
+  const downloadFileToDeviceAuto = async (file: MaterialFile, fileIndex: number) => {
+    setShowFileActionSheet(false);
+    setCurrentDownloadingFileIndex(fileIndex);
+    setIsDownloading(true);
+    setDownloadProgress(0);
+    setDownloadedBytes(0);
+    setTotalBytes(0);
+    setDownloadStatus('downloading');
+    setShowDownloadOverlay(true);
+
+    try {
+      const downloadUrl = buildMaterialViewUrl({ fileIndex, includeToken: true, includeTimestamp: true });
+      if (!downloadUrl) throw new Error('Missing download URL');
+      const fileExtension = file.extension;
+      const sanitizedName = file.original_name.replace(/[^a-zA-Z0-9.]/g, '_');
+      const fileName = `${sanitizedName}_${materialDetail?.id}_${fileIndex}${fileExtension ? `.${fileExtension}` : ''}`;
+      const tempUri = FileSystem.cacheDirectory + fileName;
+
+      console.log('Downloading file to device:', downloadUrl);
+
+      const authHeader = getAuthorizationHeader();
+      if (!authHeader) {
+        throw new Error('Authentication required. Please login again.');
+      }
+
+      const downloadResumable = FileSystem.createDownloadResumable(
+        downloadUrl,
+        tempUri,
+        { headers: { Authorization: String(authHeader) } },
+        ({ totalBytesWritten, totalBytesExpectedToWrite }) => {
+          if (totalBytesExpectedToWrite > 0) {
+            const progress = totalBytesWritten / totalBytesExpectedToWrite;
+            setDownloadProgress(Math.round(progress * 100));
+            setDownloadedBytes(totalBytesWritten);
+            setTotalBytes(totalBytesExpectedToWrite);
+          }
+        }
+      );
+
+      const result = await downloadResumable.downloadAsync();
+      if (!result || result.status !== 200) {
+        throw new Error('Download failed, server returned status ' + result?.status);
+      }
+
+      setDownloadStatus('processing');
+
+      // Use the new auto-save function
+      const autoSaveResult = await saveFileToDownloadsAuto(result.uri, fileName, materialDetail?.id?.toString());
+      
+      await FileSystem.deleteAsync(tempUri, { idempotent: true });
+
+      if (autoSaveResult.success) {
+        setDownloadStatus('complete');
+        console.log('File auto-saved to device:', fileName);
+        
+        setTimeout(() => {
+          setShowDownloadOverlay(false);
+          Alert.alert(
+            'Download Complete', 
+            `"${file.original_name}" has been saved to Downloads/OLIN/${materialDetail?.id || 'General'}/`
+          );
+        }, 1500);
+      } else {
+        throw new Error(autoSaveResult.error || 'Auto-save failed');
+      }
+
+    } catch (error: any) {
+      console.error('Error auto-saving file to device:', error);
       setDownloadStatus('error');
       setTimeout(() => {
         setShowDownloadOverlay(false);
@@ -1428,6 +1518,120 @@ export default function MaterialDetailsScreen() {
 
     } catch (err: any) {
       console.error('Failed to download or save file:', err);
+      setDownloadStatus('error');
+      
+      // Clean up temp file on error
+      try {
+        const tempUri = FileSystem.cacheDirectory + fileName;
+        await FileSystem.deleteAsync(tempUri, { idempotent: true });
+      } catch (deleteErr) {
+        console.error('Failed to delete temp file on error:', deleteErr);
+      }
+
+      setTimeout(() => {
+        setShowDownloadOverlay(false);
+        Alert.alert(
+          'Download Failed', 
+          err?.message || 'Could not save the file. Please try again.'
+        );
+      }, 2000);
+    } finally {
+      setIsDownloading(false);
+      setDownloadProgress(0);
+    }
+  };
+
+  // Auto-save to Downloads without folder picker
+  const downloadToDeviceExternalAuto = async () => {
+    if (!materialDetail?.file_path || !materialDetail?.id) {
+      console.log('Save to Device cancelled: Missing file_path or id');
+      return;
+    }
+    if (!netInfo?.isInternetReachable) {
+      Alert.alert('Offline Mode', 'File downloading requires an internet connection.');
+      return;
+    }
+
+    // Close action sheet first
+    setShowActionSheet(false);
+    
+    // Show download overlay
+    setIsDownloading(true);
+    setDownloadProgress(0);
+    setDownloadedBytes(0);
+    setTotalBytes(0);
+    setDownloadStatus('downloading');
+    setShowDownloadOverlay(true);
+
+    // Set up file details
+    const downloadUrl = buildMaterialViewUrl({ includeToken: true, includeTimestamp: true });
+    if (!downloadUrl) {
+      setShowDownloadOverlay(false);
+      setIsDownloading(false);
+      Alert.alert('Error', 'Missing download URL');
+      return;
+    }
+    const fileExtension = materialDetail.file_path.split('.').pop();
+    const sanitizedTitle = materialDetail.title.replace(/[^a-zA-Z0-9]/g, '_');
+    const fileName = `${sanitizedTitle}_${materialDetail.id}${fileExtension ? `.${fileExtension}` : ''}`;
+    const mimeType = getMimeType(materialDetail.file_path);
+
+    try {
+      // Download to cache first
+      const tempUri = FileSystem.cacheDirectory + fileName;
+      console.log('Downloading to temp file:', tempUri);
+
+      const authHeader = getAuthorizationHeader();
+      if (!authHeader) {
+        throw new Error('Authentication required. Please login again.');
+      }
+
+      const downloadResumable = FileSystem.createDownloadResumable(
+        downloadUrl,
+        tempUri,
+        { headers: { Authorization: String(authHeader) } },
+        ({ totalBytesWritten, totalBytesExpectedToWrite }) => {
+          if (totalBytesExpectedToWrite > 0) {
+            const progress = totalBytesWritten / totalBytesExpectedToWrite;
+            setDownloadProgress(Math.round(progress * 100));
+            setDownloadedBytes(totalBytesWritten);
+            setTotalBytes(totalBytesExpectedToWrite);
+          }
+        }
+      );
+
+      const result = await downloadResumable.downloadAsync();
+      if (!result || result.status !== 200) {
+        throw new Error('Download failed, server returned status ' + result?.status);
+      }
+
+      console.log('Temp download complete:', result.uri);
+      setDownloadStatus('processing');
+
+      // Use the new auto-save function
+      const autoSaveResult = await saveFileToDownloadsAuto(result.uri, fileName, materialDetail?.id?.toString());
+      
+      // Clean up the temp file
+      await FileSystem.deleteAsync(tempUri, { idempotent: true });
+
+      if (autoSaveResult.success) {
+        setDownloadStatus('complete');
+        console.log('File auto-saved to device:', fileName);
+        
+        // Auto close after success
+        setTimeout(() => {
+          setShowDownloadOverlay(false);
+          Alert.alert(
+            'Download Complete', 
+            `"${materialDetail.title}" has been saved to Downloads/OLIN/${materialDetail?.id || 'General'}/`
+          );
+        }, 1500);
+      } else {
+        throw new Error(autoSaveResult.error || 'Auto-save failed');
+      }
+
+    } catch (err: any) {
+      console.error('Failed to download or auto-save file:', err);
       setDownloadStatus('error');
       
       // Clean up temp file on error
@@ -1961,14 +2165,22 @@ export default function MaterialDetailsScreen() {
           {
             icon: 'folder-outline',
             label: 'Save to Device',
-            subtitle: Platform.OS === 'android' ? 'Choose Downloads/Documents folder' : 'Export using share sheet',
+            subtitle: Platform.OS === 'android' ? 'Auto-save to Downloads/OLIN folder' : 'Export using share sheet',
             onPress: async () => {
               const name = getLegacySingleFileViewerName();
               if (downloadedFileUri) {
-                await exportLocalFileToDevice(downloadedFileUri, name);
+                // For already downloaded files - auto-save to Downloads
+                setShowActionSheet(false);
+                const result = await saveFileToDownloadsAuto(downloadedFileUri, name, materialDetail?.id?.toString());
+                if (result.success) {
+                  Alert.alert('Saved', `"${name}" has been saved to Downloads/OLIN/${materialDetail?.id || 'General'}/`);
+                } else {
+                  Alert.alert('Error', result.error || 'Failed to save file');
+                }
                 return;
               }
-              await downloadToDeviceExternal();
+              // For not-yet-downloaded files - download then auto-save
+              await downloadToDeviceExternalAuto();
             },
             color: '#16a34a',
           },
@@ -2045,18 +2257,24 @@ export default function MaterialDetailsScreen() {
                 {
                   icon: 'folder-outline' as const,
                   label: 'Save to Device',
-                  subtitle: Platform.OS === 'android' ? 'Choose Downloads/Documents folder' : 'Export using share sheet',
+                  subtitle: Platform.OS === 'android' ? 'Auto-save to Downloads/OLIN folder' : 'Export using share sheet',
                   onPress: async () => {
                     const df = downloadedFiles.find((d) => d.materialFileIndex === selectedFileForAction.index);
                     if (df) {
-                      await exportLocalFileToDevice(df.uri, df.fileName);
+                      // For already downloaded files - auto-save to Downloads
+                      const result = await saveFileToDownloadsAuto(df.uri, df.fileName, materialDetail?.id?.toString());
+                      if (result.success) {
+                        Alert.alert('Saved', `"${df.fileName}" has been saved to Downloads/OLIN/${materialDetail?.id || 'General'}/`);
+                      } else {
+                        Alert.alert('Error', result.error || 'Failed to save file');
+                      }
                       return;
                     }
                     if (!netInfo?.isInternetReachable) {
                       showToast('Internet required to download.', 'warning');
                       return;
                     }
-                    downloadFileToDevice(selectedFileForAction.file, selectedFileForAction.index);
+                    downloadFileToDeviceAuto(selectedFileForAction.file, selectedFileForAction.index);
                   },
                   color: '#16a34a',
                 },
