@@ -249,6 +249,12 @@ const validateDownloadedFile = async (
 ): Promise<boolean> => {
   try {
     const ext = (extension || getFileExtension(fileName)).toLowerCase();
+
+    // If we can't determine extension reliably, be lenient: only require non-empty file.
+    if (!ext) {
+      const fileInfo = await FileSystem.getInfoAsync(fileUri);
+      return Boolean(fileInfo.exists && 'size' in fileInfo && fileInfo.size > 0);
+    }
     
     // For binary formats (images, videos, audio, office docs, archives), skip text-based validation
     // These formats cannot be reliably validated by reading as text
@@ -262,6 +268,24 @@ const validateDownloadedFile = async (
     ];
     
     if (binaryFormats.includes(ext)) {
+      // Quick check for HTML error response even when extension is binary
+      try {
+        const head = await FileSystem.readAsStringAsync(fileUri, {
+          encoding: (FileSystem as any).EncodingType?.UTF8 || 'utf8',
+          length: 256,
+          position: 0,
+        } as any);
+        const normalizedHead = typeof head === 'string'
+          ? head.replace(/^\uFEFF/, '').trimStart().toLowerCase()
+          : '';
+        if (normalizedHead.startsWith('<!doctype html') || normalizedHead.startsWith('<html')) {
+          await FileSystem.deleteAsync(fileUri, { idempotent: true });
+          return false;
+        }
+      } catch {
+        // ignore
+      }
+
       // For binary files, just check that file exists and has size > 0
       const fileInfo = await FileSystem.getInfoAsync(fileUri);
       if (fileInfo.exists && 'size' in fileInfo && fileInfo.size > 0) {

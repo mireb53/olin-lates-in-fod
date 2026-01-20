@@ -7,11 +7,91 @@
  * OLIN delegates file viewing to Android OS and third-party apps.
  */
 
-import * as FileSystem from 'expo-file-system/legacy';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as FileSystem from 'expo-file-system';
 import * as IntentLauncher from 'expo-intent-launcher';
 import * as Sharing from 'expo-sharing';
 import { Alert, Platform } from 'react-native';
 import { getMimeType } from '../components/FileViewer';
+
+const DOWNLOADS_DIR_URI_STORAGE_KEY = 'olin_downloads_dir_uri_v1';
+
+const guessMimeTypeFromHeadBase64 = (headBase64: string): string | null => {
+  if (!headBase64) return null;
+
+  // Common signatures in Base64
+  // PDF: %PDF
+  if (headBase64.startsWith('JVBERi0')) return 'application/pdf';
+  // JPEG: 0xFF 0xD8 0xFF
+  if (headBase64.startsWith('/9j/')) return 'image/jpeg';
+  // PNG: 0x89 50 4E 47 0D 0A 1A 0A
+  if (headBase64.startsWith('iVBORw0KGgo')) return 'image/png';
+  // GIF: GIF87a / GIF89a
+  if (headBase64.startsWith('R0lGODdh') || headBase64.startsWith('R0lGODlh')) return 'image/gif';
+  // ZIP / OOXML: PK..
+  if (headBase64.startsWith('UEsDB') || headBase64.startsWith('UEsFB') || headBase64.startsWith('UEsBA')) return 'application/zip';
+  // MP3: ID3
+  if (headBase64.startsWith('SUQz')) return 'audio/mpeg';
+  // MP4: ftyp
+  if (headBase64.includes('ZnR5cA')) return 'video/mp4';
+
+  return null;
+};
+
+const getBestMimeType = async (sourceUri: string, fileName: string): Promise<string> => {
+  const byName = getMimeType(fileName);
+  try {
+    // Read only a small head chunk; if the platform doesn't support partial reads, this may throw.
+    const headBase64 = await FileSystem.readAsStringAsync(sourceUri, {
+      encoding: FileSystem.EncodingType.Base64,
+      length: 64,
+      position: 0,
+    } as any);
+    const guessed = guessMimeTypeFromHeadBase64(typeof headBase64 === 'string' ? headBase64 : '');
+    return guessed || byName;
+  } catch {
+    return byName;
+  }
+};
+
+const getOrRequestDownloadsDirUri = async (): Promise<string | null> => {
+  try {
+    const existing = await AsyncStorage.getItem(DOWNLOADS_DIR_URI_STORAGE_KEY);
+    if (existing) {
+      // Validate it's still accessible
+      try {
+        await FileSystem.StorageAccessFramework.readDirectoryAsync(existing);
+        return existing;
+      } catch {
+        await AsyncStorage.removeItem(DOWNLOADS_DIR_URI_STORAGE_KEY);
+      }
+    }
+
+    const permission = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+    if (!permission.granted) return null;
+
+    await AsyncStorage.setItem(DOWNLOADS_DIR_URI_STORAGE_KEY, permission.directoryUri);
+    return permission.directoryUri;
+  } catch {
+    return null;
+  }
+};
+
+const ensureSafDirectoryAsync = async (parentDirUri: string, dirName: string): Promise<string> => {
+  // Try to create; if it exists, fall back to scanning.
+  try {
+    return await FileSystem.StorageAccessFramework.makeDirectoryAsync(parentDirUri, dirName);
+  } catch {
+    const entries = await FileSystem.StorageAccessFramework.readDirectoryAsync(parentDirUri);
+    const match = entries.find((uri) => {
+      const decoded = decodeURIComponent(uri);
+      return decoded.endsWith('/' + dirName) || decoded.includes('/' + dirName + '/');
+    });
+    if (match) return match;
+    // If not found, rethrow original intent: create again (some providers need it)
+    return await FileSystem.StorageAccessFramework.makeDirectoryAsync(parentDirUri, dirName);
+  }
+};
 
 export interface DownloadOptions {
   url: string;
@@ -64,37 +144,67 @@ const getOlinDownloadPath = async (courseName?: string): Promise<string> => {
 export const saveFileToDownloadsAuto = async (
   sourceUri: string,
   fileName: string,
-  _courseName?: string // kept for API compatibility
+  courseName?: string
 ): Promise<{ success: boolean; uri?: string; error?: string }> => {
   if (!sourceUri) {
     return { success: false, error: 'Source file not found' };
   }
 
   try {
-    // Check if sharing is available
-    const isAvailable = await Sharing.isAvailableAsync();
-    if (!isAvailable) {
-      return { success: false, error: 'Sharing/saving not available on this device' };
+    // iOS: Share sheet (no true Downloads folder)
+    if (Platform.OS !== 'android') {
+      const isAvailable = await Sharing.isAvailableAsync();
+      if (!isAvailable) {
+        return { success: false, error: 'Sharing/saving not available on this device' };
+      }
+      const mimeType = await getBestMimeType(sourceUri, fileName);
+      await Sharing.shareAsync(sourceUri, {
+        dialogTitle: `Save "${fileName}"`,
+        mimeType,
+        UTI: mimeType,
+      });
+      return { success: true, uri: sourceUri };
     }
 
-    const mimeType = getMimeType(fileName);
-    
-    // Use the share sheet to let user save the file
-    // On Android, this opens a system dialog where user can choose to save to Downloads, Drive, etc.
-    await Sharing.shareAsync(sourceUri, {
-      dialogTitle: `Save "${fileName}"`,
-      mimeType: mimeType,
-      UTI: mimeType, // for iOS
+    // Android: Auto-save to Downloads/OLIN/{CourseName}/ using SAF.
+    // NOTE: Android requires a one-time folder permission. After that, saves are automatic.
+    const downloadsDirUri = await getOrRequestDownloadsDirUri();
+    if (!downloadsDirUri) {
+      // Fallback to share sheet if user denied directory permission
+      const isAvailable = await Sharing.isAvailableAsync();
+      if (!isAvailable) {
+        return { success: false, error: 'Storage permission is required to save files.' };
+      }
+      const mimeType = await getBestMimeType(sourceUri, fileName);
+      await Sharing.shareAsync(sourceUri, {
+        dialogTitle: `Save "${fileName}"`,
+        mimeType,
+      });
+      return { success: true, uri: sourceUri };
+    }
+
+    const baseFolder = 'OLIN';
+    const courseFolder = courseName ? sanitizeName(courseName) : 'General';
+
+    const olinDirUri = await ensureSafDirectoryAsync(downloadsDirUri, baseFolder);
+    const courseDirUri = await ensureSafDirectoryAsync(olinDirUri, courseFolder);
+
+    const sanitizedFileName = sanitizeName(fileName);
+    const mimeType = await getBestMimeType(sourceUri, sanitizedFileName);
+    const destUri = await FileSystem.StorageAccessFramework.createFileAsync(courseDirUri, sanitizedFileName, mimeType);
+
+    const fileBase64 = await FileSystem.readAsStringAsync(sourceUri, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+    await FileSystem.writeAsStringAsync(destUri, fileBase64, {
+      encoding: FileSystem.EncodingType.Base64,
     });
 
-    console.log(`✅ File shared/saved: ${fileName}`);
-    return { success: true, uri: sourceUri };
+    console.log(`✅ Auto-saved to Downloads/${baseFolder}/${courseFolder}/${sanitizedFileName}`);
+    return { success: true, uri: destUri };
   } catch (error: any) {
     console.error('❌ Failed to save file:', error);
-    return {
-      success: false,
-      error: error?.message || 'Failed to save file'
-    };
+    return { success: false, error: error?.message || 'Failed to save file' };
   }
 };
 
@@ -142,16 +252,10 @@ export const downloadToDevice = async (options: DownloadOptions): Promise<Downlo
       throw new Error(`Download failed with status ${result?.status || 'unknown'}`);
     }
     
-    // Use share sheet to let user save the file (works on Android 10+)
-    try {
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(result.uri, {
-          dialogTitle: `Save "${fileName}"`,
-          mimeType: getMimeType(fileName),
-        });
-      }
-    } catch (shareError) {
-      console.log('Share sheet error (file still in cache):', shareError);
+    // Save to device Downloads/OLIN automatically (Android) with SAF; fallback to share sheet.
+    const saveRes = await saveFileToDownloadsAuto(result.uri, fileName, courseName);
+    if (!saveRes.success) {
+      console.log('Auto-save failed, file remains in cache:', saveRes.error);
     }
     
     console.log(`✅ File downloaded: ${sanitizedFileName}`);
@@ -178,7 +282,7 @@ export const openFileExternal = async (localUri: string, fileName?: string): Pro
   try {
     if (Platform.OS === 'android') {
       const contentUri = await FileSystem.getContentUriAsync(localUri);
-      const mimeType = getMimeType(fileName || localUri);
+      const mimeType = await getBestMimeType(localUri, fileName || localUri);
       
       await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
         data: contentUri,
@@ -223,7 +327,7 @@ export const shareFile = async (localUri: string, fileName?: string): Promise<bo
     if (await Sharing.isAvailableAsync()) {
       await Sharing.shareAsync(localUri, {
         dialogTitle: `Share ${fileName || 'file'}`,
-        mimeType: getMimeType(fileName || localUri),
+        mimeType: await getBestMimeType(localUri, fileName || localUri),
       });
       return true;
     } else {
