@@ -220,6 +220,39 @@ const getMimeType = (filePath: string): string => {
     'c': 'text/x-c',
     'cpp': 'text/x-c++',
   };
+
+  const buildSafeAssessmentDownloadedFileName = useCallback(
+    (originalName: string, opts?: { extensionOverride?: string; fileIndex?: number }) => {
+      const maxLen = 120;
+      const safeOriginal = (originalName || 'file').trim();
+
+      const lastDot = safeOriginal.lastIndexOf('.');
+      const parsedBase = lastDot > 0 ? safeOriginal.slice(0, lastDot) : safeOriginal;
+      const parsedExt = lastDot > 0 ? safeOriginal.slice(lastDot + 1) : '';
+
+      const ext = (opts?.extensionOverride || parsedExt)
+        .replace(/^\./, '')
+        .replace(/[^a-zA-Z0-9]/g, '')
+        .toLowerCase();
+
+      const base = parsedBase
+        .replace(/[^a-zA-Z0-9._-]/g, '_')
+        .replace(/_+/g, '_')
+        .replace(/\.+$/, '')
+        .substring(0, 200);
+
+      const idPart = assessmentDetail?.id ? String(assessmentDetail.id) : 'assessment';
+      const indexPart = typeof opts?.fileIndex === 'number' ? `_${opts.fileIndex}` : '';
+      const suffix = `_${idPart}${indexPart}`;
+      const extPart = ext ? `.${ext}` : '';
+
+      const maxBaseLen = Math.max(12, maxLen - suffix.length - extPart.length);
+      const trimmedBase = base.length > maxBaseLen ? base.slice(0, maxBaseLen) : base;
+
+      return `${trimmedBase}${suffix}${extPart}`;
+    },
+    [assessmentDetail?.id]
+  );
   return mimeMap[extension || ''] || 'application/octet-stream';
 };
 
@@ -625,9 +658,10 @@ export default function AssessmentDetailsScreen() {
 
     try {
       const downloadUrl = `${api.defaults.baseURL}/assessments/${assessmentDetail?.id}/file/${fileIndex}`;
-      const fileExtension = file.extension;
-      const sanitizedName = file.original_name.replace(/[^a-zA-Z0-9.]/g, '_');
-      const fileName = `${sanitizedName}_${assessmentDetail?.id}_${fileIndex}${fileExtension ? `.${fileExtension}` : ''}`;
+      const fileName = buildSafeAssessmentDownloadedFileName(file.original_name, {
+        extensionOverride: file.extension || getFileExtension(file.original_name),
+        fileIndex,
+      });
       const localUri = FileSystem.documentDirectory + fileName;
 
       console.log('Downloading file to app:', downloadUrl);
@@ -747,9 +781,10 @@ export default function AssessmentDetailsScreen() {
 
     try {
       const downloadUrl = `${api.defaults.baseURL}/assessments/${assessmentDetail?.id}/file/${fileIndex}`;
-      const fileExtension = file.extension;
-      const sanitizedName = file.original_name.replace(/[^a-zA-Z0-9.]/g, '_');
-      const fileName = `${sanitizedName}_${assessmentDetail?.id}_${fileIndex}${fileExtension ? `.${fileExtension}` : ''}`;
+      const fileName = buildSafeAssessmentDownloadedFileName(file.original_name, {
+        extensionOverride: file.extension || getFileExtension(file.original_name),
+        fileIndex,
+      });
       const tempUri = FileSystem.cacheDirectory + fileName;
 
       console.log('Downloading file to device:', downloadUrl);
@@ -829,9 +864,10 @@ export default function AssessmentDetailsScreen() {
 
     try {
       const downloadUrl = `${api.defaults.baseURL}/assessments/${assessmentDetail?.id}/file/${fileIndex}`;
-      const fileExtension = file.extension;
-      const sanitizedName = file.original_name.replace(/[^a-zA-Z0-9.]/g, '_');
-      const fileName = `${sanitizedName}_${assessmentDetail?.id}_${fileIndex}${fileExtension ? `.${fileExtension}` : ''}`;
+      const fileName = buildSafeAssessmentDownloadedFileName(file.original_name, {
+        extensionOverride: file.extension || getFileExtension(file.original_name),
+        fileIndex,
+      });
       const tempUri = FileSystem.cacheDirectory + fileName;
 
       console.log('Downloading file to device:', downloadUrl);
