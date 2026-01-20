@@ -16,6 +16,56 @@ import { getMimeType } from '../components/FileViewer';
 
 const DOWNLOADS_DIR_URI_STORAGE_KEY = 'olin_downloads_dir_uri_v1';
 
+const splitBaseAndExt = (fileName: string): { base: string; extWithDot: string } => {
+  const safe = (fileName || 'file').trim();
+  const lastDot = safe.lastIndexOf('.');
+  if (lastDot > 0 && lastDot < safe.length - 1) {
+    return { base: safe.slice(0, lastDot), extWithDot: safe.slice(lastDot) };
+  }
+  return { base: safe, extWithDot: '' };
+};
+
+const clampFileNameLength = (fileName: string, maxLen = 120): string => {
+  const { base, extWithDot } = splitBaseAndExt(fileName);
+  const allowedBaseLen = Math.max(8, maxLen - extWithDot.length);
+  const trimmedBase = base.length > allowedBaseLen ? base.slice(0, allowedBaseLen) : base;
+  return `${trimmedBase}${extWithDot}`;
+};
+
+const getSafDisplayName = (uri: string): string => {
+  try {
+    const decoded = decodeURIComponent(uri);
+    const lastSlash = decoded.lastIndexOf('/');
+    return lastSlash >= 0 ? decoded.slice(lastSlash + 1) : decoded;
+  } catch {
+    const lastSlash = uri.lastIndexOf('/');
+    return lastSlash >= 0 ? uri.slice(lastSlash + 1) : uri;
+  }
+};
+
+const buildUniqueFileNameInSafDir = async (dirUri: string, desiredFileName: string): Promise<string> => {
+  const sanitizedDesired = clampFileNameLength(sanitizeName(desiredFileName));
+  const entries = await FileSystem.StorageAccessFramework.readDirectoryAsync(dirUri);
+  const existingNames = new Set(
+    entries.map((u: string) => getSafDisplayName(u).toLowerCase())
+  );
+
+  if (!existingNames.has(sanitizedDesired.toLowerCase())) return sanitizedDesired;
+
+  const { base, extWithDot } = splitBaseAndExt(sanitizedDesired);
+
+  // Add incremental suffix: "name (1).ext", "name (2).ext", ...
+  // Keep total length capped.
+  for (let i = 1; i <= 999; i++) {
+    const candidate = clampFileNameLength(`${base} (${i})${extWithDot}`);
+    if (!existingNames.has(candidate.toLowerCase())) return candidate;
+  }
+
+  // As a final fallback, add timestamp
+  const ts = Date.now();
+  return clampFileNameLength(`${base}_${ts}${extWithDot}`);
+};
+
 const guessMimeTypeFromHeadBase64 = (headBase64: string): string | null => {
   if (!headBase64) return null;
 
@@ -194,9 +244,9 @@ export const saveFileToDownloadsAuto = async (
     const olinDirUri = await ensureSafDirectoryAsync(downloadsDirUri, baseFolder);
     const courseDirUri = await ensureSafDirectoryAsync(olinDirUri, courseFolder);
 
-    const sanitizedFileName = sanitizeName(fileName);
-    const mimeType = await getBestMimeType(sourceUri, sanitizedFileName);
-    const destUri = await FileSystem.StorageAccessFramework.createFileAsync(courseDirUri, sanitizedFileName, mimeType);
+    const uniqueFileName = await buildUniqueFileNameInSafDir(courseDirUri, fileName);
+    const mimeType = await getBestMimeType(sourceUri, uniqueFileName);
+    const destUri = await FileSystem.StorageAccessFramework.createFileAsync(courseDirUri, uniqueFileName, mimeType);
 
     const fileBase64 = await FileSystem.readAsStringAsync(sourceUri, {
       encoding: 'base64',
@@ -205,7 +255,7 @@ export const saveFileToDownloadsAuto = async (
       encoding: 'base64',
     });
 
-    console.log(`✅ Auto-saved to Downloads/${baseFolder}/${courseFolder}/${sanitizedFileName}`);
+    console.log(`✅ Auto-saved to Downloads/${baseFolder}/${courseFolder}/${uniqueFileName}`);
     return { success: true, uri: destUri };
   } catch (error: any) {
     console.error('❌ Failed to save file:', error);
