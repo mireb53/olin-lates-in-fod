@@ -8,7 +8,7 @@
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as IntentLauncher from 'expo-intent-launcher';
 import * as Sharing from 'expo-sharing';
 import { Alert, Platform } from 'react-native';
@@ -43,7 +43,7 @@ const getBestMimeType = async (sourceUri: string, fileName: string): Promise<str
   try {
     // Read only a small head chunk; if the platform doesn't support partial reads, this may throw.
     const headBase64 = await FileSystem.readAsStringAsync(sourceUri, {
-      encoding: FileSystem.EncodingType.Base64,
+      encoding: 'base64',
       length: 64,
       position: 0,
     } as any);
@@ -83,7 +83,7 @@ const ensureSafDirectoryAsync = async (parentDirUri: string, dirName: string): P
     return await FileSystem.StorageAccessFramework.makeDirectoryAsync(parentDirUri, dirName);
   } catch {
     const entries = await FileSystem.StorageAccessFramework.readDirectoryAsync(parentDirUri);
-    const match = entries.find((uri) => {
+    const match = entries.find((uri: string) => {
       const decoded = decodeURIComponent(uri);
       return decoded.endsWith('/' + dirName) || decoded.includes('/' + dirName + '/');
     });
@@ -125,8 +125,13 @@ const sanitizeName = (name: string): string => {
 const getOlinDownloadPath = async (courseName?: string): Promise<string> => {
   const baseFolder = 'OLIN';
   const courseFolder = courseName ? sanitizeName(courseName) : 'General';
-  
-  const tempPath = `${FileSystem.cacheDirectory}${baseFolder}/${courseFolder}/`;
+
+  const cacheDir = FileSystem.cacheDirectory || FileSystem.documentDirectory;
+  if (!cacheDir) {
+    throw new Error('FileSystem cache/document directory is not available on this device.');
+  }
+
+  const tempPath = `${cacheDir}${baseFolder}/${courseFolder}/`;
   
   const dirInfo = await FileSystem.getInfoAsync(tempPath);
   if (!dirInfo.exists) {
@@ -194,10 +199,10 @@ export const saveFileToDownloadsAuto = async (
     const destUri = await FileSystem.StorageAccessFramework.createFileAsync(courseDirUri, sanitizedFileName, mimeType);
 
     const fileBase64 = await FileSystem.readAsStringAsync(sourceUri, {
-      encoding: FileSystem.EncodingType.Base64,
+      encoding: 'base64',
     });
     await FileSystem.writeAsStringAsync(destUri, fileBase64, {
-      encoding: FileSystem.EncodingType.Base64,
+      encoding: 'base64',
     });
 
     console.log(`✅ Auto-saved to Downloads/${baseFolder}/${courseFolder}/${sanitizedFileName}`);
