@@ -38,6 +38,7 @@ import { usePendingSyncNotification } from '@/hooks/usePendingSyncNotification';
 // Removed fileOpenPolicy - OLIN now always opens files externally
 import { useNetworkStatus } from '../../../../context/NetworkContext';
 import api, { getUserData } from '../../../../lib/api';
+import { saveFileToDownloadsAuto } from '../../../../lib/downloadUtils';
 import {
   checkIfAssessmentNeedsDetails,
   deleteOfflineQuizAttempt,
@@ -548,11 +549,35 @@ export default function AssessmentDetailsScreen() {
 
       const result = await downloadResumable.downloadAsync();
 
+      if (!result || result.status !== 200) {
+        throw new Error(`Download failed, server returned status ${result?.status || 'unknown'}`);
+      }
+
       if (result?.uri) {
         setDownloadStatus('processing');
         const fileInfo = await FileSystem.getInfoAsync(result.uri);
         
         if (fileInfo.exists && 'size' in fileInfo && fileInfo.size > 0) {
+          // Basic PDF integrity check (helps catch cases where HTML/error page was downloaded)
+          const ext = (file.extension || getFileExtension(file.original_name)).toLowerCase();
+          const isPdf = ext === 'pdf';
+          if (isPdf) {
+            try {
+              const head = await FileSystem.readAsStringAsync(result.uri, {
+                encoding: (FileSystem as any).EncodingType?.UTF8 || 'utf8',
+                length: 1024,
+                position: 0,
+              } as any);
+              const normalized = typeof head === 'string' ? head.replace(/^\uFEFF/, '').trimStart() : '';
+              if (!normalized.includes('%PDF')) {
+                await FileSystem.deleteAsync(result.uri, { idempotent: true });
+                throw new Error('Downloaded file is not a valid PDF. The server may have returned an error page.');
+              }
+            } catch (e: any) {
+              if (e?.message?.includes('not a valid PDF')) throw e;
+            }
+          }
+
           const newDownloadedFile: DownloadedFileInfo = {
             uri: result.uri,
             fileName: file.original_name,
@@ -704,6 +729,81 @@ export default function AssessmentDetailsScreen() {
     }
   };
 
+  // Auto-save file to device without folder picker
+  const downloadFileToDeviceAuto = async (file: AssessmentFile, fileIndex: number) => {
+    setShowFileActionSheet(false);
+    setCurrentDownloadingFileIndex(fileIndex);
+    setIsDownloading(true);
+    setDownloadProgress(0);
+    setDownloadedBytes(0);
+    setTotalBytes(0);
+    setDownloadStatus('downloading');
+    setShowDownloadOverlay(true);
+
+    try {
+      const downloadUrl = `${api.defaults.baseURL}/assessments/${assessmentDetail?.id}/file/${fileIndex}`;
+      const fileExtension = file.extension;
+      const sanitizedName = file.original_name.replace(/[^a-zA-Z0-9.]/g, '_');
+      const fileName = `${sanitizedName}_${assessmentDetail?.id}_${fileIndex}${fileExtension ? `.${fileExtension}` : ''}`;
+      const tempUri = FileSystem.cacheDirectory + fileName;
+
+      console.log('Downloading file to device:', downloadUrl);
+
+      const downloadResumable = FileSystem.createDownloadResumable(
+        downloadUrl,
+        tempUri,
+        {},
+        ({ totalBytesWritten, totalBytesExpectedToWrite }) => {
+          if (totalBytesExpectedToWrite > 0) {
+            const progress = totalBytesWritten / totalBytesExpectedToWrite;
+            setDownloadProgress(Math.round(progress * 100));
+            setDownloadedBytes(totalBytesWritten);
+            setTotalBytes(totalBytesExpectedToWrite);
+          }
+        }
+      );
+
+      const result = await downloadResumable.downloadAsync();
+      if (!result || result.status !== 200) {
+        throw new Error('Download failed, server returned status ' + result?.status);
+      }
+
+      setDownloadStatus('processing');
+
+      // Use the new auto-save function
+      const autoSaveResult = await saveFileToDownloadsAuto(result.uri, fileName, assessmentDetail?.id?.toString());
+      
+      await FileSystem.deleteAsync(tempUri, { idempotent: true });
+
+      if (autoSaveResult.success) {
+        setDownloadStatus('complete');
+        console.log('File auto-saved to device:', fileName);
+        
+        setTimeout(() => {
+          setShowDownloadOverlay(false);
+          Alert.alert(
+            'Download Complete', 
+            `"${file.original_name}" has been saved to Downloads/OLIN/${assessmentDetail?.id || 'General'}/`
+          );
+        }, 1500);
+      } else {
+        throw new Error(autoSaveResult.error || 'Auto-save failed');
+      }
+
+    } catch (error: any) {
+      console.error('Error auto-saving file to device:', error);
+      setDownloadStatus('error');
+      setTimeout(() => {
+        setShowDownloadOverlay(false);
+        Alert.alert('Download Failed', error?.message || 'Failed to save file. Please try again.');
+      }, 2000);
+    } finally {
+      setIsDownloading(false);
+      setDownloadProgress(0);
+      setCurrentDownloadingFileIndex(null);
+    }
+  };
+
   // Delete a downloaded file
   const handleDeleteDownloadedFile = (fileIndex: number) => {
     const downloadedFile = downloadedFiles.find(d => d.assessmentFileIndex === fileIndex);
@@ -819,6 +919,10 @@ export default function AssessmentDetailsScreen() {
       console.log('Download cancelled: Missing assessment_file_url or id');
       return null;
     }
+    if (!netInfo?.isInternetReachable) {
+      Alert.alert('Offline Mode', 'File downloading requires an internet connection.');
+      return null;
+    }
     if (downloadedFileUri) {
       console.log('Download cancelled: File already downloaded');
       return downloadedFileUri;
@@ -852,9 +956,32 @@ export default function AssessmentDetailsScreen() {
 
       const result = await downloadResumable.downloadAsync();
 
+      if (!result || result.status !== 200) {
+        throw new Error(`Download failed, server returned status ${result?.status || 'unknown'}`);
+      }
+
       if (result?.uri) {
         const fileInfo = await FileSystem.getInfoAsync(result.uri);
         if (fileInfo.exists && 'size' in fileInfo && fileInfo.size > 0) {
+          // Basic PDF integrity check (helps catch cases where HTML/error page was downloaded)
+          const ext = (getFileExtension(assessmentDetail.assessment_file_path || '') || fileExtension).toLowerCase();
+          if (ext === 'pdf') {
+            try {
+              const head = await FileSystem.readAsStringAsync(result.uri, {
+                encoding: (FileSystem as any).EncodingType?.UTF8 || 'utf8',
+                length: 1024,
+                position: 0,
+              } as any);
+              const normalized = typeof head === 'string' ? head.replace(/^\uFEFF/, '').trimStart() : '';
+              if (!normalized.includes('%PDF')) {
+                await FileSystem.deleteAsync(result.uri, { idempotent: true });
+                throw new Error('Downloaded file is not a valid PDF. The server may have returned an error page.');
+              }
+            } catch (e: any) {
+              if (e?.message?.includes('not a valid PDF')) throw e;
+            }
+          }
+
           setDownloadedFileUri(result.uri);
           setFileSize(formatBytes(fileInfo.size));
           // Safely handle modificationTime which may be undefined
@@ -955,6 +1082,87 @@ export default function AssessmentDetailsScreen() {
         'Download Failed', 
         err?.message || 'Could not save the file. Please try again.'
       );
+    } finally {
+      setIsDownloading(false);
+      setDownloadProgress(0);
+    }
+  };
+
+  const downloadToDeviceExternalAuto = async () => {
+    if (!assessmentDetail?.assessment_file_url) {
+      console.log('Save to Device cancelled: Missing assessment_file_url');
+      return;
+    }
+
+    setShowInstructionsActionSheet(false);
+    
+    // Show progress
+    setIsDownloading(true);
+    setDownloadProgress(0);
+    setShowDownloadOverlay(true);
+    setDownloadStatus('downloading');
+
+    // Prep File Details
+    const fileExtension = assessmentDetail.assessment_file_path?.split('.').pop() || 'pdf';
+    const sanitizedTitle = assessmentDetail.title.replace(/[^a-zA-Z0-9]/g, '_');
+    const fileName = `Assessment_${sanitizedTitle}_${assessmentDetail.id}.${fileExtension}`;
+    
+    try {
+      // Download to cache first
+      const tempUri = FileSystem.cacheDirectory + fileName;
+      console.log('Downloading to temp file:', tempUri);
+
+      const downloadResumable = FileSystem.createDownloadResumable(
+        assessmentDetail.assessment_file_url,
+        tempUri,
+        {},
+        ({ totalBytesWritten, totalBytesExpectedToWrite }) => {
+          if (totalBytesExpectedToWrite > 0) {
+            const progress = totalBytesWritten / totalBytesExpectedToWrite;
+            setDownloadProgress(Math.round(progress * 100));
+          }
+        }
+      );
+
+      const result = await downloadResumable.downloadAsync();
+      if (!result || result.status !== 200) {
+        throw new Error('Download failed, server returned status ' + result?.status);
+      }
+
+      console.log('Temp download complete:', result.uri);
+      setDownloadStatus('processing');
+
+      // Use the new auto-save function
+      const autoSaveResult = await saveFileToDownloadsAuto(result.uri, fileName, assessmentDetail?.id?.toString());
+      
+      // Clean up the temp file
+      await FileSystem.deleteAsync(tempUri, { idempotent: true });
+
+      if (autoSaveResult.success) {
+        setDownloadStatus('complete');
+        console.log('File auto-saved to device:', fileName);
+        
+        setTimeout(() => {
+          setShowDownloadOverlay(false);
+          Alert.alert(
+            'Download Complete', 
+            `"${assessmentDetail.title}" has been saved to Downloads/OLIN/${assessmentDetail?.id || 'General'}/`
+          );
+        }, 1500);
+      } else {
+        throw new Error(autoSaveResult.error || 'Auto-save failed');
+      }
+
+    } catch (err: any) {
+      console.error('Failed to auto-save file:', err);
+      setDownloadStatus('error');
+      setTimeout(() => {
+        setShowDownloadOverlay(false);
+        Alert.alert(
+          'Download Failed', 
+          err?.message || 'Could not save the file. Please try again.'
+        );
+      }, 2000);
     } finally {
       setIsDownloading(false);
       setDownloadProgress(0);
@@ -2041,7 +2249,7 @@ export default function AssessmentDetailsScreen() {
         </View>
         {isAssignmentType && assessmentDetail.assessment_file_url && (
           <View style={styles.sectionContainer}>
-            <Text style={styles.sectionHeader}>Assignment Instructions</Text>
+            <Text style={styles.sectionHeader}>File</Text>
 
             {(() => {
               const instructionsPath = assessmentDetail.assessment_file_path || '';
@@ -2162,7 +2370,7 @@ export default function AssessmentDetailsScreen() {
             <View style={styles.filesSectionHeader}>
               <View style={styles.filesSectionTitleRow}>
                 <Ionicons name="documents" size={18} color="#4285f4" />
-                <Text style={styles.sectionHeaderText}>Assessment Files ({assessmentDetail.files.length})</Text>
+                <Text style={styles.sectionHeaderText}>Files ({assessmentDetail.files.length})</Text>
               </View>
               <View style={styles.filesSectionActions}>
                 {downloadedFiles.length > 0 && (
@@ -2913,12 +3121,23 @@ export default function AssessmentDetailsScreen() {
         fileType={getFileType(assessmentDetail?.assessment_file_path || '') as any}
         isCached={!!downloadedFileUri}
         actions={[
+          {
+            icon: 'download-outline' as const,
+            label: 'Download for Offline',
+            subtitle: 'Save for offline access',
+            onPress: async () => {
+              setShowInstructionsActionSheet(false);
+              await downloadToAppStorage();
+            },
+            color: '#16a34a',
+            disabled: !!downloadedFileUri || !netInfo?.isInternetReachable,
+          },
           ...(!downloadedFileUri
             ? [
                 {
                   icon: 'open' as const,
-                  label: 'Download & Open in Another App',
-                  subtitle: 'Files are always opened with external apps.',
+                  label: 'Download & Open',
+                  subtitle: 'Download then open with another app',
                   color: '#4285f4',
                   disabled: !netInfo?.isInternetReachable,
                   onPress: async () => {
@@ -2926,6 +3145,7 @@ export default function AssessmentDetailsScreen() {
                       Alert.alert('Offline Mode', 'Internet connection required to download this file.');
                       return;
                     }
+                    setShowInstructionsActionSheet(false);
                     const local = await downloadToAppStorage();
                     if (!local) return;
                     await openLocalFileInAnotherApp(local);
@@ -2933,56 +3153,39 @@ export default function AssessmentDetailsScreen() {
                 },
               ]
             : []),
-          ...(downloadedFileUri ? [
-            ...(!isOfficeFileName(assessmentDetail?.assessment_file_path || '') ? [{
-              icon: 'eye-outline' as const,
-              label: 'View in App',
-              subtitle: 'Open inside the app',
-              onPress: () => {
-                setShowInstructionsActionSheet(false);
-                openInstructionsInApp();
-              },
-              color: '#16a34a',
-            }] : []),
-            {
-              icon: 'open-outline' as const,
-              label: 'Open in Another App',
-              subtitle: 'Use Word/Drive/other apps',
-              onPress: () => {
-                setShowInstructionsActionSheet(false);
-                handleOpenFile();
-              },
-              color: '#4285f4',
-            },
-            {
-              icon: 'share-outline' as const,
-              label: 'Share File',
-              subtitle: 'Share with other apps',
-              onPress: async () => {
-                setShowInstructionsActionSheet(false);
-                if (downloadedFileUri && await Sharing.isAvailableAsync()) {
-                  await Sharing.shareAsync(downloadedFileUri);
-                }
-              },
-              color: '#9333ea',
-            },
-          ] : []),
-          {
-            icon: 'phone-portrait-outline',
-            label: 'Save to App',
-            subtitle: 'Access offline within the app',
-            onPress: () => {
-              downloadToAppStorage();
-            },
-            color: '#1967d2',
-            disabled: !!downloadedFileUri,
-          },
+          ...(downloadedFileUri
+            ? [
+                {
+                  icon: 'open-outline' as const,
+                  label: 'Open File',
+                  subtitle: 'Open with another app',
+                  onPress: () => {
+                    setShowInstructionsActionSheet(false);
+                    handleOpenFile();
+                  },
+                  color: '#4285f4',
+                },
+                {
+                  icon: 'share-outline' as const,
+                  label: 'Share File',
+                  subtitle: 'Share with other apps',
+                  onPress: async () => {
+                    setShowInstructionsActionSheet(false);
+                    if (downloadedFileUri && (await Sharing.isAvailableAsync())) {
+                      await Sharing.shareAsync(downloadedFileUri);
+                    }
+                  },
+                  color: '#9333ea',
+                },
+              ]
+            : []),
           {
             icon: 'folder-outline',
             label: 'Save to Device',
-            subtitle: Platform.OS === 'android' ? 'Choose Downloads/Documents folder' : 'Export using share sheet',
-            onPress: () => {
-              downloadToDeviceExternal();
+            subtitle: Platform.OS === 'android' ? 'Auto-save to Downloads/OLIN folder' : 'Export using share sheet',
+            onPress: async () => {
+              setShowInstructionsActionSheet(false);
+              await downloadToDeviceExternalAuto();
             },
             color: '#16a34a',
           },
@@ -3046,12 +3249,18 @@ export default function AssessmentDetailsScreen() {
             {
               icon: 'folder-outline' as const,
               label: 'Save to Device',
-              subtitle: Platform.OS === 'android' ? 'Choose Downloads/Documents folder' : 'Export using share sheet',
+              subtitle: Platform.OS === 'android' ? 'Auto-save to Downloads/OLIN folder' : 'Export using share sheet',
               onPress: async () => {
                 const df = selectedFileForAction.downloaded;
                 if (!df) return;
                 setShowFileActionSheet(false);
-                await exportLocalFileToDevice(df.uri, df.fileName);
+                // Use auto-save function
+                const result = await saveFileToDownloadsAuto(df.uri, df.fileName, assessmentDetail?.id?.toString());
+                if (result.success) {
+                  Alert.alert('Saved', `"${df.fileName}" has been saved to Downloads/OLIN/${assessmentDetail?.id || 'General'}/`);
+                } else {
+                  Alert.alert('Error', result.error || 'Failed to save file');
+                }
               },
               color: '#16a34a',
             },
@@ -3089,10 +3298,10 @@ export default function AssessmentDetailsScreen() {
             {
               icon: 'folder-outline' as const,
               label: 'Save to Device',
-              subtitle: Platform.OS === 'android' ? 'Choose Downloads/Documents folder' : 'Export using share sheet',
+              subtitle: Platform.OS === 'android' ? 'Auto-save to Downloads/OLIN folder' : 'Export using share sheet',
               onPress: () => {
                 if (selectedFileForAction) {
-                  downloadFileToDevice(selectedFileForAction.file, selectedFileForAction.index);
+                  downloadFileToDeviceAuto(selectedFileForAction.file, selectedFileForAction.index);
                 }
               },
               color: '#16a34a',
