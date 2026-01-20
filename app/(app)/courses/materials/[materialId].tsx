@@ -192,6 +192,97 @@ const getMaterialIcon = (type: string) => {
   }
 };
 
+/**
+ * Validates downloaded file by checking for common HTML/error response signatures.
+ * Deletes the file if it appears to be an error page instead of the expected file type.
+ * Returns true if file seems valid, false if it should be rejected.
+ */
+const validateDownloadedFile = async (
+  fileUri: string,
+  fileName: string,
+  extension: string
+): Promise<boolean> => {
+  try {
+    // Read first ~4KB to check for magic bytes / content signatures
+    const head = await FileSystem.readAsStringAsync(fileUri, {
+      encoding: (FileSystem as any).EncodingType?.UTF8 || 'utf8',
+      length: 4096,
+      position: 0,
+    } as any);
+
+    const normalizedHead = typeof head === 'string' 
+      ? head.replace(/^\uFEFF/, '').trimStart() // Remove BOM and leading whitespace
+      : '';
+
+    // Check for common HTML/error signatures (indicates server returned error page)
+    const htmlSignatures = [
+      /^<!doctype html/i,
+      /^<html/i,
+      /^<\?xml/i,
+      /{.*"error".*}/i,
+      /error|exception|failed|unauthorized|forbidden/i
+    ];
+
+    // If file content looks like HTML/error response, reject it
+    if (htmlSignatures.some(sig => sig.test(normalizedHead))) {
+      console.log(`File "${fileName}" appears to be an error page or HTML response. Deleting...`);
+      await FileSystem.deleteAsync(fileUri, { idempotent: true });
+      return false;
+    }
+
+    // File-type specific validation
+    const ext = (extension || getFileExtension(fileName)).toLowerCase();
+
+    // PDF: must contain %PDF signature
+    if (ext === 'pdf') {
+      if (!normalizedHead.includes('%PDF')) {
+        console.log(`File "${fileName}" does not have valid PDF signature. Deleting...`);
+        await FileSystem.deleteAsync(fileUri, { idempotent: true });
+        return false;
+      }
+    }
+
+    // Image formats: check magic bytes
+    if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp'].includes(ext)) {
+      const imageSignatures = {
+        jpg: /^\xff\xd8\xff/,
+        jpeg: /^\xff\xd8\xff/,
+        png: /^\x89PNG\r\n\x1a\n/,
+        gif: /^GIF8/,
+        bmp: /^BM/,
+        webp: /^RIFF.*WEBP/,
+      };
+
+      // For images, try to match the signature
+      const expectedSig = imageSignatures[ext as keyof typeof imageSignatures];
+      if (expectedSig && !expectedSig.test(normalizedHead)) {
+        console.log(`File "${fileName}" does not match expected ${ext.toUpperCase()} format. Deleting...`);
+        await FileSystem.deleteAsync(fileUri, { idempotent: true });
+        return false;
+      }
+    }
+
+    // Document formats: DOCX/XLSX/PPTX are ZIP archives (start with PK)
+    if (['docx', 'xlsx', 'pptx', 'zip'].includes(ext)) {
+      if (!normalizedHead.startsWith('PK')) {
+        console.log(`File "${fileName}" does not appear to be a valid ${ext.toUpperCase()} file. Deleting...`);
+        await FileSystem.deleteAsync(fileUri, { idempotent: true });
+        return false;
+      }
+    }
+
+    // Text files: should not start with HTML/JSON error patterns (caught above)
+    // Video formats: more complex to validate without ffmpeg, so we skip magic byte check
+
+    return true;
+  } catch (error: any) {
+    // If validation fails for benign reasons (e.g., read not supported),
+    // allow the file to be saved and let the external app decide.
+    console.log(`File validation encountered an issue (may be ok): ${error?.message}`);
+    return true; // Default to allowing the file
+  }
+};
+
 const getMaterialColor = (type: string) => {
   const lowerType = type.toLowerCase();
   switch (lowerType) {
@@ -873,28 +964,12 @@ export default function MaterialDetailsScreen() {
         const fileInfo = await FileSystem.getInfoAsync(result.uri);
         
         if (fileInfo.exists && 'size' in fileInfo && fileInfo.size > 0) {
-          // Basic PDF integrity check (helps catch cases where HTML/error page was downloaded)
-          const ext = (file.extension || getFileExtension(file.original_name)).toLowerCase();
-          const isPdf = ext === 'pdf';
-          if (isPdf) {
-            try {
-              // Read more bytes and allow leading whitespace/BOM
-              const head = await FileSystem.readAsStringAsync(result.uri, {
-                encoding: (FileSystem as any).EncodingType?.UTF8 || 'utf8',
-                length: 1024,
-                position: 0,
-              } as any);
-              const normalized = typeof head === 'string' ? head.replace(/^\uFEFF/, '').trimStart() : '';
-
-              // Some valid PDFs can have whitespace/BOM before %PDF, so we search within the first chunk
-              if (!normalized.includes('%PDF')) {
-                await FileSystem.deleteAsync(result.uri, { idempotent: true });
-                throw new Error('Downloaded file is not a valid PDF. The server may have returned an error page.');
-              }
-            } catch (e: any) {
-              // If partial reads aren't supported, ignore and let external viewer decide.
-              if (e?.message?.includes('not a valid PDF')) throw e;
-            }
+          // Validate downloaded file against all file types (not just PDFs)
+          const ext = file.extension || getFileExtension(file.original_name);
+          const isValid = await validateDownloadedFile(result.uri, file.original_name, ext);
+          
+          if (!isValid) {
+            throw new Error('Downloaded file failed validation. The server may have returned an error page or incorrect file format.');
           }
 
           const newDownloadedFile: DownloadedFileInfo = {
@@ -1348,24 +1423,12 @@ export default function MaterialDetailsScreen() {
         setDownloadStatus('processing');
         const fileInfo = await FileSystem.getInfoAsync(result.uri);
         if (fileInfo.exists && 'size' in fileInfo && fileInfo.size > 0) {
-          // Basic PDF integrity check
-          const fileExt = (materialDetail.file_path.split('.').pop() || '').toLowerCase();
-          if (fileExt === 'pdf') {
-            try {
-              // Read more bytes to handle PDFs with leading whitespace or byte-order marks
-              const head = await FileSystem.readAsStringAsync(result.uri, {
-                encoding: (FileSystem as any).EncodingType?.UTF8 || 'utf8',
-                length: 16,
-                position: 0,
-              } as any);
-              // Check for PDF signature - allow some whitespace/BOM before %PDF
-              if (typeof head === 'string' && !head.includes('%PDF')) {
-                await FileSystem.deleteAsync(result.uri, { idempotent: true });
-                throw new Error('Downloaded file is not a valid PDF. The server may have returned an error page.');
-              }
-            } catch (e: any) {
-              if (e?.message?.includes('not a valid PDF')) throw e;
-            }
+          // Validate downloaded file against all file types (not just PDFs)
+          const fileExt = materialDetail.file_path.split('.').pop() || '';
+          const isValid = await validateDownloadedFile(result.uri, materialDetail.title, fileExt);
+          
+          if (!isValid) {
+            throw new Error('Downloaded file failed validation. The server may have returned an error page or incorrect file format.');
           }
 
           setDownloadedFileUri(result.uri);
