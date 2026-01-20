@@ -77,6 +77,71 @@ export const requestStoragePermission = async (): Promise<boolean> => {
 };
 
 /**
+ * Save file directly to Downloads/OLIN/{CourseName}/ WITHOUT folder picker
+ * Auto-creates directories, auto-saves to phone's Downloads folder
+ * File persists even if app is uninstalled
+ */
+export const saveFileToDownloadsAuto = async (
+  sourceUri: string,
+  fileName: string,
+  courseName?: string
+): Promise<{ success: boolean; uri?: string; error?: string }> => {
+  if (!sourceUri) {
+    return { success: false, error: 'Source file not found' };
+  }
+
+  try {
+    if (Platform.OS !== 'android') {
+      // iOS: Use share sheet (no auto-save to Downloads)
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(sourceUri, {
+          dialogTitle: 'Save file',
+          mimeType: getMimeType(fileName),
+        });
+        return { success: true };
+      }
+      return { success: false, error: 'Sharing not available' };
+    }
+
+    // Android: Auto-save to Downloads/OLIN/{CourseName}/
+    // Request permission
+    const { status } = await MediaLibrary.requestPermissionsAsync();
+    if (status !== 'granted') {
+      return { success: false, error: 'Storage permission required' };
+    }
+
+    const baseFolder = 'OLIN';
+    const courseFolder = courseName ? sanitizeName(courseName) : 'General';
+    const albumName = `${baseFolder}/${courseFolder}`;
+
+    // Create asset from file
+    const asset = await MediaLibrary.createAssetAsync(sourceUri);
+
+    // Get or create album in Downloads/OLIN/CourseName/
+    let album = await MediaLibrary.getAlbumAsync(albumName);
+    if (!album) {
+      album = await MediaLibrary.createAlbumAsync(albumName, asset, false);
+    } else {
+      await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
+    }
+
+    const displayPath = `Downloads/OLIN/${courseFolder}/${sanitizeName(fileName)}`;
+    console.log(`✅ File auto-saved to: ${displayPath}`);
+    
+    return { 
+      success: true, 
+      uri: sourceUri
+    };
+  } catch (error: any) {
+    console.error('❌ Failed to save file:', error);
+    return {
+      success: false,
+      error: error?.message || 'Failed to save file'
+    };
+  }
+};
+
+/**
  * Download file to device storage (Downloads/OLIN/{CourseName}/)
  */
 export const downloadToDevice = async (options: DownloadOptions): Promise<DownloadResult> => {
