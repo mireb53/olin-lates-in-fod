@@ -37,7 +37,7 @@ const contentMaxWidth = isLargeTablet ? 900 : isTablet ? 700 : screenWidth;
 import { usePendingSyncNotification } from '@/hooks/usePendingSyncNotification';
 // Removed fileOpenPolicy - OLIN now always opens files externally
 import { useNetworkStatus } from '../../../../context/NetworkContext';
-import api, { getUserData } from '../../../../lib/api';
+import api, { getAuthorizationHeader, getUserData } from '../../../../lib/api';
 import { saveFileToDownloadsAuto } from '../../../../lib/downloadUtils';
 import {
     checkIfAssessmentNeedsDetails,
@@ -238,9 +238,8 @@ const isOfficeExtension = (extension?: string): boolean => {
 const isOfficeFileName = (nameOrPath: string): boolean => isOfficeExtension(getFileExtension(nameOrPath));
 
 /**
- * Validates downloaded file by checking for obvious HTML error pages.
- * Only rejects files that are clearly HTML error responses.
- * Returns true if file seems valid, false if it should be rejected.
+ * Validates downloaded file to ensure server returned the actual file, not an HTML error page.
+ * Returns true if file is OK, false if file should be rejected.
  */
 const validateDownloadedFile = async (
   fileUri: string,
@@ -250,88 +249,81 @@ const validateDownloadedFile = async (
   try {
     const ext = (extension || getFileExtension(fileName)).toLowerCase();
 
-    // If we can't determine extension reliably, be lenient: only require non-empty file.
-    if (!ext) {
-      const fileInfo = await FileSystem.getInfoAsync(fileUri);
-      return Boolean(fileInfo.exists && 'size' in fileInfo && fileInfo.size > 0);
-    }
-    
-    // For binary formats (images, videos, audio, office docs, archives), skip text-based validation
-    // These formats cannot be reliably validated by reading as text
-    const binaryFormats = [
-      'jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'ico',
-      'mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac',
-      'mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'flv',
-      'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
-      'zip', 'rar', '7z', 'tar', 'gz',
-      'exe', 'apk', 'dmg',
-    ];
-    
-    if (binaryFormats.includes(ext)) {
-      // Quick check for HTML error response even when extension is binary
-      try {
-        const head = await FileSystem.readAsStringAsync(fileUri, {
-          encoding: (FileSystem as any).EncodingType?.UTF8 || 'utf8',
-          length: 256,
-          position: 0,
-        } as any);
-        const normalizedHead = typeof head === 'string'
-          ? head.replace(/^\uFEFF/, '').trimStart().toLowerCase()
-          : '';
-        if (normalizedHead.startsWith('<!doctype html') || normalizedHead.startsWith('<html')) {
-          await FileSystem.deleteAsync(fileUri, { idempotent: true });
-          return false;
-        }
-      } catch {
-        // ignore
-      }
-
-      // For binary files, just check that file exists and has size > 0
-      const fileInfo = await FileSystem.getInfoAsync(fileUri);
-      if (fileInfo.exists && 'size' in fileInfo && fileInfo.size > 0) {
-        console.log(`Binary file "${fileName}" passed basic validation (size: ${fileInfo.size} bytes)`);
-        return true;
-      }
+    // Check file exists and has content
+    const fileInfo = await FileSystem.getInfoAsync(fileUri);
+    if (!fileInfo.exists || !('size' in fileInfo) || fileInfo.size === 0) {
+      console.log(`File "${fileName}" is empty or doesn't exist.`);
       return false;
     }
 
-    // For text-based formats (pdf, txt, html, json, etc.), check for HTML error pages
-    const head = await FileSystem.readAsStringAsync(fileUri, {
-      encoding: (FileSystem as any).EncodingType?.UTF8 || 'utf8',
-      length: 1024,
-      position: 0,
-    } as any);
+    // Read the first bytes to check for HTML response
+    let head = '';
+    try {
+      head = await FileSystem.readAsStringAsync(fileUri, {
+        encoding: 'utf8',
+        length: 512,
+        position: 0,
+      } as any);
+    } catch {
+      // If we can't read as string, it's likely a valid binary file
+      console.log(`File "${fileName}" is binary, passed validation.`);
+      return true;
+    }
 
-    const normalizedHead = typeof head === 'string' 
-      ? head.replace(/^\uFEFF/, '').trimStart().toLowerCase()
-      : '';
-
-    // Only reject if it's clearly an HTML error page (very specific patterns)
-    const isHtmlErrorPage = 
-      (normalizedHead.startsWith('<!doctype html') || normalizedHead.startsWith('<html')) &&
-      (normalizedHead.includes('error') || normalizedHead.includes('404') || 
-       normalizedHead.includes('403') || normalizedHead.includes('500') ||
-       normalizedHead.includes('unauthorized') || normalizedHead.includes('forbidden'));
-
-    if (isHtmlErrorPage) {
-      console.log(`File "${fileName}" appears to be an HTML error page. Deleting...`);
+    const normalizedHead = (head || '').replace(/^\uFEFF/, '').trimStart().toLowerCase();
+    
+    // Check if server returned HTML instead of the expected file
+    // This catches: login pages, error pages, 404 pages, etc.
+    const isHtml = normalizedHead.startsWith('<!doctype html') || 
+                   normalizedHead.startsWith('<html') ||
+                   normalizedHead.startsWith('<?xml') && normalizedHead.includes('<html');
+    
+    // If we got HTML but expected a non-HTML file, reject it
+    const htmlExtensions = ['html', 'htm', 'xhtml'];
+    if (isHtml && !htmlExtensions.includes(ext)) {
+      console.log(`File "${fileName}" (expected ${ext}) received HTML response instead. Server error.`);
       await FileSystem.deleteAsync(fileUri, { idempotent: true });
       return false;
     }
 
-    // For PDF files, do a simple signature check
+    // For PDF files, verify it has the PDF signature
     if (ext === 'pdf') {
       if (!normalizedHead.includes('%pdf')) {
-        console.log(`File "${fileName}" does not have PDF signature. Deleting...`);
+        console.log(`File "${fileName}" does not have PDF signature.`);
         await FileSystem.deleteAsync(fileUri, { idempotent: true });
         return false;
       }
     }
 
+    // For common binary formats, do a quick magic byte check
+    const binarySignatures: { [key: string]: string[] } = {
+      'jpg': ['\\xff\\xd8\\xff'],
+      'jpeg': ['\\xff\\xd8\\xff'],
+      'png': ['\\x89png', '\\x89PNG'],
+      'gif': ['gif87a', 'gif89a', 'GIF87a', 'GIF89a'],
+      'zip': ['pk\\x03\\x04', 'PK\\x03\\x04'],
+      'rar': ['rar!'],
+      'mp3': ['id3', 'ID3', '\\xff\\xfb', '\\xff\\xfa'],
+      'mp4': ['ftyp', '\\x00\\x00\\x00'],
+    };
+    
+    if (binarySignatures[ext]) {
+      const signatures = binarySignatures[ext];
+      const hasValidSignature = signatures.some(sig => 
+        normalizedHead.includes(sig.toLowerCase()) || head.includes(sig)
+      );
+      // Don't reject based on signature alone - some files may have different headers
+      // Just log for debugging
+      if (!hasValidSignature) {
+        console.log(`File "${fileName}" may have unexpected format, but allowing it.`);
+      }
+    }
+
+    console.log(`File "${fileName}" passed validation (size: ${fileInfo.size} bytes)`);
     return true;
   } catch (error: any) {
     // If validation fails for any reason, allow the file and let external app decide
-    console.log(`File validation skipped (error: ${error?.message}). Allowing file.`);
+    console.log(`File validation error (${error?.message}). Allowing file anyway.`);
     return true;
   }
 };
@@ -672,10 +664,15 @@ export default function AssessmentDetailsScreen() {
 
       console.log('Downloading file to app:', downloadUrl);
 
+      const authHeader = getAuthorizationHeader();
+      if (!authHeader) {
+        throw new Error('Authentication required. Please login again.');
+      }
+
       const downloadResumable = FileSystem.createDownloadResumable(
         downloadUrl,
         localUri,
-        {},
+        { headers: { Authorization: String(authHeader) } },
         ({ totalBytesWritten, totalBytesExpectedToWrite }) => {
           if (totalBytesExpectedToWrite > 0) {
             const progress = totalBytesWritten / totalBytesExpectedToWrite;
@@ -795,10 +792,15 @@ export default function AssessmentDetailsScreen() {
 
       console.log('Downloading file to device:', downloadUrl);
 
+      const authHeader = getAuthorizationHeader();
+      if (!authHeader) {
+        throw new Error('Authentication required. Please login again.');
+      }
+
       const downloadResumable = FileSystem.createDownloadResumable(
         downloadUrl,
         tempUri,
-        {},
+        { headers: { Authorization: String(authHeader) } },
         ({ totalBytesWritten, totalBytesExpectedToWrite }) => {
           if (totalBytesExpectedToWrite > 0) {
             const progress = totalBytesWritten / totalBytesExpectedToWrite;
@@ -812,6 +814,17 @@ export default function AssessmentDetailsScreen() {
       const result = await downloadResumable.downloadAsync();
       if (!result || result.status !== 200) {
         throw new Error('Download failed, server returned status ' + result?.status);
+      }
+
+      // Validate the downloaded file - ensure server didn't return HTML error page
+      const isValid = await validateDownloadedFile(
+        result.uri,
+        fileName,
+        file.extension || getFileExtension(file.original_name)
+      );
+      
+      if (!isValid) {
+        throw new Error('The server returned an error page instead of the file. Please check your connection and try again.');
       }
 
       setDownloadStatus('processing');
@@ -878,10 +891,15 @@ export default function AssessmentDetailsScreen() {
 
       console.log('Downloading file to device:', downloadUrl);
 
+      const authHeader = getAuthorizationHeader();
+      if (!authHeader) {
+        throw new Error('Authentication required. Please login again.');
+      }
+
       const downloadResumable = FileSystem.createDownloadResumable(
         downloadUrl,
         tempUri,
-        {},
+        { headers: { Authorization: String(authHeader) } },
         ({ totalBytesWritten, totalBytesExpectedToWrite }) => {
           if (totalBytesExpectedToWrite > 0) {
             const progress = totalBytesWritten / totalBytesExpectedToWrite;
@@ -895,6 +913,17 @@ export default function AssessmentDetailsScreen() {
       const result = await downloadResumable.downloadAsync();
       if (!result || result.status !== 200) {
         throw new Error('Download failed, server returned status ' + result?.status);
+      }
+
+      // Validate the downloaded file - ensure server didn't return HTML error page
+      const isValid = await validateDownloadedFile(
+        result.uri,
+        fileName,
+        file.extension || getFileExtension(file.original_name)
+      );
+      
+      if (!isValid) {
+        throw new Error('The server returned an error page instead of the file. Please check your connection and try again.');
       }
 
       setDownloadStatus('processing');
@@ -1071,10 +1100,15 @@ export default function AssessmentDetailsScreen() {
 
       console.log('Starting download to:', localUri);
 
+      const authHeader = getAuthorizationHeader();
+      if (!authHeader) {
+        throw new Error('Authentication required. Please login again.');
+      }
+
       const downloadResumable = FileSystem.createDownloadResumable(
         assessmentDetail.assessment_file_url,
         localUri,
-        {}, // Headers (if needed)
+        { headers: { Authorization: String(authHeader) } },
         ({ totalBytesWritten, totalBytesExpectedToWrite }) => {
           if (totalBytesExpectedToWrite > 0) {
             const progress = totalBytesWritten / totalBytesExpectedToWrite;
@@ -1151,10 +1185,15 @@ export default function AssessmentDetailsScreen() {
       const tempUri = FileSystem.cacheDirectory + fileName;
       console.log('Downloading to temp file:', tempUri);
 
+      const authHeader = getAuthorizationHeader();
+      if (!authHeader) {
+        throw new Error('Authentication required. Please login again.');
+      }
+
       const downloadResumable = FileSystem.createDownloadResumable(
         assessmentDetail.assessment_file_url,
         tempUri,
-        {},
+        { headers: { Authorization: String(authHeader) } },
         ({ totalBytesWritten, totalBytesExpectedToWrite }) => {
           if (totalBytesExpectedToWrite > 0) {
             const progress = totalBytesWritten / totalBytesExpectedToWrite;
@@ -1230,10 +1269,15 @@ export default function AssessmentDetailsScreen() {
       const tempUri = FileSystem.cacheDirectory + fileName;
       console.log('Downloading to temp file:', tempUri);
 
+      const authHeader = getAuthorizationHeader();
+      if (!authHeader) {
+        throw new Error('Authentication required. Please login again.');
+      }
+
       const downloadResumable = FileSystem.createDownloadResumable(
         assessmentDetail.assessment_file_url,
         tempUri,
-        {},
+        { headers: { Authorization: String(authHeader) } },
         ({ totalBytesWritten, totalBytesExpectedToWrite }) => {
           if (totalBytesExpectedToWrite > 0) {
             const progress = totalBytesWritten / totalBytesExpectedToWrite;
