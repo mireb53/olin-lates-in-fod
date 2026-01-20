@@ -220,39 +220,6 @@ const getMimeType = (filePath: string): string => {
     'c': 'text/x-c',
     'cpp': 'text/x-c++',
   };
-
-  const buildSafeAssessmentDownloadedFileName = useCallback(
-    (originalName: string, opts?: { extensionOverride?: string; fileIndex?: number }) => {
-      const maxLen = 120;
-      const safeOriginal = (originalName || 'file').trim();
-
-      const lastDot = safeOriginal.lastIndexOf('.');
-      const parsedBase = lastDot > 0 ? safeOriginal.slice(0, lastDot) : safeOriginal;
-      const parsedExt = lastDot > 0 ? safeOriginal.slice(lastDot + 1) : '';
-
-      const ext = (opts?.extensionOverride || parsedExt)
-        .replace(/^\./, '')
-        .replace(/[^a-zA-Z0-9]/g, '')
-        .toLowerCase();
-
-      const base = parsedBase
-        .replace(/[^a-zA-Z0-9._-]/g, '_')
-        .replace(/_+/g, '_')
-        .replace(/\.+$/, '')
-        .substring(0, 200);
-
-      const idPart = assessmentDetail?.id ? String(assessmentDetail.id) : 'assessment';
-      const indexPart = typeof opts?.fileIndex === 'number' ? `_${opts.fileIndex}` : '';
-      const suffix = `_${idPart}${indexPart}`;
-      const extPart = ext ? `.${ext}` : '';
-
-      const maxBaseLen = Math.max(12, maxLen - suffix.length - extPart.length);
-      const trimmedBase = base.length > maxBaseLen ? base.slice(0, maxBaseLen) : base;
-
-      return `${trimmedBase}${suffix}${extPart}`;
-    },
-    [assessmentDetail?.id]
-  );
   return mimeMap[extension || ''] || 'application/octet-stream';
 };
 
@@ -529,6 +496,40 @@ export default function AssessmentDetailsScreen() {
 
   usePendingSyncNotification(netInfo?.isInternetReachable ?? null, 'assessment-details');
 
+  // Build safe filename for downloaded assessment files
+  const buildSafeAssessmentDownloadedFileName = useCallback(
+    (originalName: string, opts?: { extensionOverride?: string; fileIndex?: number }) => {
+      const maxLen = 120;
+      const safeOriginal = (originalName || 'file').trim();
+
+      const lastDot = safeOriginal.lastIndexOf('.');
+      const parsedBase = lastDot > 0 ? safeOriginal.slice(0, lastDot) : safeOriginal;
+      const parsedExt = lastDot > 0 ? safeOriginal.slice(lastDot + 1) : '';
+
+      const ext = (opts?.extensionOverride || parsedExt)
+        .replace(/^\./, '')
+        .replace(/[^a-zA-Z0-9]/g, '')
+        .toLowerCase();
+
+      const base = parsedBase
+        .replace(/[^a-zA-Z0-9._-]/g, '_')
+        .replace(/_+/g, '_')
+        .replace(/\.+$/, '')
+        .substring(0, 200);
+
+      const idPart = assessmentDetail?.id ? String(assessmentDetail.id) : 'assessment';
+      const indexPart = typeof opts?.fileIndex === 'number' ? `_${opts.fileIndex}` : '';
+      const suffix = `_${idPart}${indexPart}`;
+      const extPart = ext ? `.${ext}` : '';
+
+      const maxBaseLen = Math.max(12, maxLen - suffix.length - extPart.length);
+      const trimmedBase = base.length > maxBaseLen ? base.slice(0, maxBaseLen) : base;
+
+      return `${trimmedBase}${suffix}${extPart}`;
+    },
+    [assessmentDetail?.id]
+  );
+
   React.useEffect(() => {
     if (assessmentDetail?.assessment_file_path) {
       checkIfFileDownloaded(assessmentDetail);
@@ -566,8 +567,8 @@ export default function AssessmentDetailsScreen() {
     // Check if file is already downloaded
     const existingDownload = downloadedFiles.find(d => d.assessmentFileIndex === fileIndex);
     if (existingDownload) {
-      // Always open downloaded files externally
-      await openLocalFileInAnotherApp(existingDownload.uri);
+      // Always open downloaded files externally - pass original filename for proper MIME type
+      await openLocalFileInAnotherApp(existingDownload.uri, file.original_name);
       return;
     }
     
@@ -586,7 +587,7 @@ export default function AssessmentDetailsScreen() {
     // For images, open directly with external app
     const existingDownload = downloadedFiles.find(d => d.assessmentFileIndex === fileIndex);
     if (existingDownload && (file.extension?.toLowerCase() === 'jpg' || file.extension?.toLowerCase() === 'jpeg' || file.extension?.toLowerCase() === 'png' || file.extension?.toLowerCase() === 'gif' || file.extension?.toLowerCase() === 'webp')) {
-      openLocalFileInAnotherApp(existingDownload.uri);
+      openLocalFileInAnotherApp(existingDownload.uri, file.original_name);
       return;
     }
     
@@ -596,26 +597,31 @@ export default function AssessmentDetailsScreen() {
     setShowFileActionSheet(true);
   };
 
-  const openLocalFileInAnotherApp = async (localUri: string) => {
+  const openLocalFileInAnotherApp = async (localUri: string, fileName?: string) => {
     if (!localUri) return;
 
     if (Platform.OS === 'android') {
       try {
         const contentUri = await FileSystem.getContentUriAsync(localUri);
-        const mimeType = getMimeType(localUri);
+        // Use fileName if provided for accurate MIME detection, fallback to URI
+        const mimeType = getMimeType(fileName || localUri);
         await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
           data: contentUri,
+          // FLAG_GRANT_READ_URI_PERMISSION (1) | FLAG_ACTIVITY_NEW_TASK (0x10000000)
           flags: 1,
           type: mimeType,
         });
       } catch (e) {
-        Alert.alert('Error', 'No app found to open this file.');
+        console.error('Error opening file:', e);
+        Alert.alert('Error', 'No app found to open this file. Please install an app that can handle this file type.');
       }
       return;
     }
 
     if (await Sharing.isAvailableAsync()) {
-      await Sharing.shareAsync(localUri);
+      await Sharing.shareAsync(localUri, {
+        mimeType: getMimeType(fileName || localUri),
+      });
     }
   };
 
@@ -715,7 +721,7 @@ export default function AssessmentDetailsScreen() {
           if (opts?.afterDownload === 'open') {
             setTimeout(async () => {
               setShowDownloadOverlay(false);
-              await openLocalFileInAnotherApp(result.uri);
+              await openLocalFileInAnotherApp(result.uri, file.original_name);
             }, 800);
           } else {
             setTimeout(() => {
@@ -725,7 +731,7 @@ export default function AssessmentDetailsScreen() {
                 `"${file.original_name}" saved for offline access.`,
                 [
                   { text: 'Done', style: 'cancel' },
-                  { text: 'Open File', onPress: () => openLocalFileInAnotherApp(result.uri) },
+                  { text: 'Open File', onPress: () => openLocalFileInAnotherApp(result.uri, file.original_name) },
                 ]
               );
             }, 1200);
@@ -1284,29 +1290,37 @@ export default function AssessmentDetailsScreen() {
   const handleOpenFile = async () => {
     if (!downloadedFileUri) return;
 
+    // Get the filename from assessment details for proper MIME detection
+    const fileName = assessmentDetail?.assessment_file_path?.split('/').pop() || assessmentDetail?.title || '';
+
     if (Platform.OS === 'android') {
       try {
         const contentUri = await FileSystem.getContentUriAsync(downloadedFileUri);
-        const mimeType = getMimeType(downloadedFileUri);
+        const mimeType = getMimeType(fileName || downloadedFileUri);
         await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
           data: contentUri,
           flags: 1,
           type: mimeType,
         });
       } catch (e) {
-        Alert.alert('Error', 'No app found to open this file.');
+        console.error('Error opening file:', e);
+        Alert.alert('Error', 'No app found to open this file. Please install an app that can handle this file type.');
       }
     } else {
       if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(downloadedFileUri);
+        await Sharing.shareAsync(downloadedFileUri, {
+          mimeType: getMimeType(fileName || downloadedFileUri),
+        });
       }
     }
   };
 
   const openInstructionsInApp = () => {
     if (!downloadedFileUri) return;
+    // Get filename for proper MIME detection
+    const fileName = assessmentDetail?.assessment_file_path?.split('/').pop() || assessmentDetail?.title || '';
     // Open file with external app
-    openLocalFileInAnotherApp(downloadedFileUri);
+    openLocalFileInAnotherApp(downloadedFileUri, fileName);
   };
 
   const handleDeleteDownload = async () => {
@@ -2359,7 +2373,8 @@ export default function AssessmentDetailsScreen() {
             )}
           </View>
         </View>
-        {isAssignmentType && assessmentDetail.assessment_file_url && (
+        {/* Only show legacy single 'File' section if files[] array is NOT available */}
+        {isAssignmentType && assessmentDetail.assessment_file_url && (!assessmentDetail.files || assessmentDetail.files.length === 0) && (
           <View style={styles.sectionContainer}>
             <Text style={styles.sectionHeader}>File</Text>
 
@@ -2553,7 +2568,7 @@ export default function AssessmentDetailsScreen() {
                           onPress={() => {
                             const downloadedFile = downloadedFiles.find(d => d.assessmentFileIndex === index);
                             if (downloadedFile) {
-                              openLocalFileInAnotherApp(downloadedFile.uri);
+                              openLocalFileInAnotherApp(downloadedFile.uri, file.original_name);
                             }
                           }}
                         >

@@ -504,13 +504,14 @@ export default function MaterialDetailsScreen() {
     [materialDetail?.id]
   );
 
-  const openLocalFileInAnotherApp = useCallback(async (localUri: string, dialogTitle?: string) => {
+  const openLocalFileInAnotherApp = useCallback(async (localUri: string, fileName?: string) => {
     if (!localUri) return;
 
     if (Platform.OS === 'android') {
       try {
         const contentUri = await FileSystem.getContentUriAsync(localUri);
-        const mimeType = getMimeType(localUri);
+        // Use fileName if provided for accurate MIME type detection, fallback to URI
+        const mimeType = getMimeType(fileName || localUri);
         await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
           data: contentUri,
           flags: 1,
@@ -518,7 +519,7 @@ export default function MaterialDetailsScreen() {
         });
       } catch (error) {
         console.error('Error opening file with IntentLauncher', error);
-        Alert.alert('Error', 'Could not find an app to open this file.');
+        Alert.alert('Error', 'No app found to open this file. Please install an app that can handle this file type.');
       }
       return;
     }
@@ -526,7 +527,8 @@ export default function MaterialDetailsScreen() {
     try {
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(localUri, {
-          dialogTitle: dialogTitle ? `Open ${dialogTitle}` : undefined,
+          mimeType: getMimeType(fileName || localUri),
+          dialogTitle: fileName ? `Open ${fileName}` : undefined,
         });
       } else {
         Alert.alert('Not available', 'File opening is not available on this device.');
