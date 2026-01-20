@@ -193,8 +193,8 @@ const getMaterialIcon = (type: string) => {
 };
 
 /**
- * Validates downloaded file by checking for common HTML/error response signatures.
- * Deletes the file if it appears to be an error page instead of the expected file type.
+ * Validates downloaded file by checking for obvious HTML error pages.
+ * Only rejects files that are clearly HTML error responses.
  * Returns true if file seems valid, false if it should be rejected.
  */
 const validateDownloadedFile = async (
@@ -203,83 +203,67 @@ const validateDownloadedFile = async (
   extension: string
 ): Promise<boolean> => {
   try {
-    // Read first ~4KB to check for magic bytes / content signatures
+    const ext = (extension || getFileExtension(fileName)).toLowerCase();
+    
+    // For binary formats (images, videos, audio, office docs, archives), skip text-based validation
+    // These formats cannot be reliably validated by reading as text
+    const binaryFormats = [
+      'jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'ico',
+      'mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac',
+      'mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'flv',
+      'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
+      'zip', 'rar', '7z', 'tar', 'gz',
+      'exe', 'apk', 'dmg',
+    ];
+    
+    if (binaryFormats.includes(ext)) {
+      // For binary files, just check that file exists and has size > 0
+      const fileInfo = await FileSystem.getInfoAsync(fileUri);
+      if (fileInfo.exists && 'size' in fileInfo && fileInfo.size > 0) {
+        console.log(`Binary file "${fileName}" passed basic validation (size: ${fileInfo.size} bytes)`);
+        return true;
+      }
+      return false;
+    }
+
+    // For text-based formats (pdf, txt, html, json, etc.), check for HTML error pages
     const head = await FileSystem.readAsStringAsync(fileUri, {
       encoding: (FileSystem as any).EncodingType?.UTF8 || 'utf8',
-      length: 4096,
+      length: 1024,
       position: 0,
     } as any);
 
     const normalizedHead = typeof head === 'string' 
-      ? head.replace(/^\uFEFF/, '').trimStart() // Remove BOM and leading whitespace
+      ? head.replace(/^\uFEFF/, '').trimStart().toLowerCase()
       : '';
 
-    // Check for common HTML/error signatures (indicates server returned error page)
-    const htmlSignatures = [
-      /^<!doctype html/i,
-      /^<html/i,
-      /^<\?xml/i,
-      /{.*"error".*}/i,
-      /error|exception|failed|unauthorized|forbidden/i
-    ];
+    // Only reject if it's clearly an HTML error page (very specific patterns)
+    const isHtmlErrorPage = 
+      (normalizedHead.startsWith('<!doctype html') || normalizedHead.startsWith('<html')) &&
+      (normalizedHead.includes('error') || normalizedHead.includes('404') || 
+       normalizedHead.includes('403') || normalizedHead.includes('500') ||
+       normalizedHead.includes('unauthorized') || normalizedHead.includes('forbidden'));
 
-    // If file content looks like HTML/error response, reject it
-    if (htmlSignatures.some(sig => sig.test(normalizedHead))) {
-      console.log(`File "${fileName}" appears to be an error page or HTML response. Deleting...`);
+    if (isHtmlErrorPage) {
+      console.log(`File "${fileName}" appears to be an HTML error page. Deleting...`);
       await FileSystem.deleteAsync(fileUri, { idempotent: true });
       return false;
     }
 
-    // File-type specific validation
-    const ext = (extension || getFileExtension(fileName)).toLowerCase();
-
-    // PDF: must contain %PDF signature
+    // For PDF files, do a simple signature check
     if (ext === 'pdf') {
-      if (!normalizedHead.includes('%PDF')) {
-        console.log(`File "${fileName}" does not have valid PDF signature. Deleting...`);
+      if (!normalizedHead.includes('%pdf')) {
+        console.log(`File "${fileName}" does not have PDF signature. Deleting...`);
         await FileSystem.deleteAsync(fileUri, { idempotent: true });
         return false;
       }
     }
-
-    // Image formats: check magic bytes
-    if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp'].includes(ext)) {
-      const imageSignatures = {
-        jpg: /^\xff\xd8\xff/,
-        jpeg: /^\xff\xd8\xff/,
-        png: /^\x89PNG\r\n\x1a\n/,
-        gif: /^GIF8/,
-        bmp: /^BM/,
-        webp: /^RIFF.*WEBP/,
-      };
-
-      // For images, try to match the signature
-      const expectedSig = imageSignatures[ext as keyof typeof imageSignatures];
-      if (expectedSig && !expectedSig.test(normalizedHead)) {
-        console.log(`File "${fileName}" does not match expected ${ext.toUpperCase()} format. Deleting...`);
-        await FileSystem.deleteAsync(fileUri, { idempotent: true });
-        return false;
-      }
-    }
-
-    // Document formats: DOCX/XLSX/PPTX are ZIP archives (start with PK)
-    if (['docx', 'xlsx', 'pptx', 'zip'].includes(ext)) {
-      if (!normalizedHead.startsWith('PK')) {
-        console.log(`File "${fileName}" does not appear to be a valid ${ext.toUpperCase()} file. Deleting...`);
-        await FileSystem.deleteAsync(fileUri, { idempotent: true });
-        return false;
-      }
-    }
-
-    // Text files: should not start with HTML/JSON error patterns (caught above)
-    // Video formats: more complex to validate without ffmpeg, so we skip magic byte check
 
     return true;
   } catch (error: any) {
-    // If validation fails for benign reasons (e.g., read not supported),
-    // allow the file to be saved and let the external app decide.
-    console.log(`File validation encountered an issue (may be ok): ${error?.message}`);
-    return true; // Default to allowing the file
+    // If validation fails for any reason, allow the file and let external app decide
+    console.log(`File validation skipped (error: ${error?.message}). Allowing file.`);
+    return true;
   }
 };
 

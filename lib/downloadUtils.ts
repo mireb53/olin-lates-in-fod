@@ -1,15 +1,14 @@
 /**
  * OLIN Download Utilities
  * 
- * Handles downloading files to device storage (Downloads/OLIN/{CourseName}/)
- * and opening files via Android intents.
+ * Handles downloading files to device storage and opening files via Android intents.
+ * Uses Sharing API for "Save to Device" to avoid permission issues on Android 10+.
  * 
  * OLIN delegates file viewing to Android OS and third-party apps.
  */
 
 import * as FileSystem from 'expo-file-system/legacy';
 import * as IntentLauncher from 'expo-intent-launcher';
-import * as MediaLibrary from 'expo-media-library';
 import * as Sharing from 'expo-sharing';
 import { Alert, Platform } from 'react-native';
 import { getMimeType } from '../components/FileViewer';
@@ -41,18 +40,14 @@ const sanitizeName = (name: string): string => {
 };
 
 /**
- * Get the OLIN download folder path
- * Structure: Downloads/OLIN/{CourseName}/
+ * Get the OLIN download folder path in app cache
  */
 const getOlinDownloadPath = async (courseName?: string): Promise<string> => {
   const baseFolder = 'OLIN';
   const courseFolder = courseName ? sanitizeName(courseName) : 'General';
   
-  // Use cache directory as temporary download location
-  // Files will be moved to Downloads folder after download
   const tempPath = `${FileSystem.cacheDirectory}${baseFolder}/${courseFolder}/`;
   
-  // Ensure directory exists
   const dirInfo = await FileSystem.getInfoAsync(tempPath);
   if (!dirInfo.exists) {
     await FileSystem.makeDirectoryAsync(tempPath, { intermediates: true });
@@ -62,76 +57,38 @@ const getOlinDownloadPath = async (courseName?: string): Promise<string> => {
 };
 
 /**
- * Request storage permissions (Android only)
- */
-export const requestStoragePermission = async (): Promise<boolean> => {
-  if (Platform.OS !== 'android') return true;
-  
-  try {
-    const { status } = await MediaLibrary.requestPermissionsAsync();
-    return status === 'granted';
-  } catch (error) {
-    console.error('Permission request failed:', error);
-    return false;
-  }
-};
-
-/**
- * Save file directly to Downloads/OLIN/{CourseName}/ WITHOUT folder picker
- * Auto-creates directories, auto-saves to phone's Downloads folder
- * File persists even if app is uninstalled
+ * Save file to device using Share sheet (Android & iOS)
+ * This avoids permission issues on Android 10+ and lets the user choose where to save.
+ * Works reliably on all Android versions.
  */
 export const saveFileToDownloadsAuto = async (
   sourceUri: string,
   fileName: string,
-  courseName?: string
+  _courseName?: string // kept for API compatibility
 ): Promise<{ success: boolean; uri?: string; error?: string }> => {
   if (!sourceUri) {
     return { success: false, error: 'Source file not found' };
   }
 
   try {
-    if (Platform.OS !== 'android') {
-      // iOS: Use share sheet (no auto-save to Downloads)
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(sourceUri, {
-          dialogTitle: 'Save file',
-          mimeType: getMimeType(fileName),
-        });
-        return { success: true };
-      }
-      return { success: false, error: 'Sharing not available' };
+    // Check if sharing is available
+    const isAvailable = await Sharing.isAvailableAsync();
+    if (!isAvailable) {
+      return { success: false, error: 'Sharing/saving not available on this device' };
     }
 
-    // Android: Auto-save to Downloads/OLIN/{CourseName}/
-    // Request permission
-    const { status } = await MediaLibrary.requestPermissionsAsync();
-    if (status !== 'granted') {
-      return { success: false, error: 'Storage permission required' };
-    }
-
-    const baseFolder = 'OLIN';
-    const courseFolder = courseName ? sanitizeName(courseName) : 'General';
-    const albumName = `${baseFolder}/${courseFolder}`;
-
-    // Create asset from file
-    const asset = await MediaLibrary.createAssetAsync(sourceUri);
-
-    // Get or create album in Downloads/OLIN/CourseName/
-    let album = await MediaLibrary.getAlbumAsync(albumName);
-    if (!album) {
-      album = await MediaLibrary.createAlbumAsync(albumName, asset, false);
-    } else {
-      await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
-    }
-
-    const displayPath = `Downloads/OLIN/${courseFolder}/${sanitizeName(fileName)}`;
-    console.log(`✅ File auto-saved to: ${displayPath}`);
+    const mimeType = getMimeType(fileName);
     
-    return { 
-      success: true, 
-      uri: sourceUri
-    };
+    // Use the share sheet to let user save the file
+    // On Android, this opens a system dialog where user can choose to save to Downloads, Drive, etc.
+    await Sharing.shareAsync(sourceUri, {
+      dialogTitle: `Save "${fileName}"`,
+      mimeType: mimeType,
+      UTI: mimeType, // for iOS
+    });
+
+    console.log(`✅ File shared/saved: ${fileName}`);
+    return { success: true, uri: sourceUri };
   } catch (error: any) {
     console.error('❌ Failed to save file:', error);
     return {
@@ -142,21 +99,21 @@ export const saveFileToDownloadsAuto = async (
 };
 
 /**
- * Download file to device storage (Downloads/OLIN/{CourseName}/)
+ * Request storage permissions (Android only) - simplified
+ */
+export const requestStoragePermission = async (): Promise<boolean> => {
+  // On Android 10+, we use Sharing API which doesn't need WRITE_EXTERNAL_STORAGE
+  return true;
+};
+
+/**
+ * Download file to app cache and then save via Share sheet
  */
 export const downloadToDevice = async (options: DownloadOptions): Promise<DownloadResult> => {
   const { url, fileName, courseName, onProgress, onComplete, onError } = options;
   
   try {
-    // Request permission first
-    const hasPermission = await requestStoragePermission();
-    if (!hasPermission) {
-      const errorMsg = 'Storage permission is required to download files.';
-      onError?.(errorMsg);
-      return { success: false, error: errorMsg };
-    }
-    
-    // Get download path
+    // Get download path in app cache
     const downloadPath = await getOlinDownloadPath(courseName);
     const sanitizedFileName = sanitizeName(fileName);
     const tempUri = `${downloadPath}${sanitizedFileName}`;
@@ -185,36 +142,21 @@ export const downloadToDevice = async (options: DownloadOptions): Promise<Downlo
       throw new Error(`Download failed with status ${result?.status || 'unknown'}`);
     }
     
-    // Move to Downloads folder using SAF (Storage Access Framework) on Android
-    if (Platform.OS === 'android') {
-      try {
-        // Try to save to Downloads folder using MediaLibrary
-        const asset = await MediaLibrary.createAssetAsync(result.uri);
-        
-        // Try to move to OLIN album/folder
-        const albumName = courseName ? `OLIN/${sanitizeName(courseName)}` : 'OLIN';
-        let album = await MediaLibrary.getAlbumAsync(albumName);
-        
-        if (!album) {
-          album = await MediaLibrary.createAlbumAsync(albumName, asset, false);
-        } else {
-          await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
-        }
-        
-        console.log(`✅ File saved to Downloads/OLIN: ${sanitizedFileName}`);
-        onComplete?.(result.uri);
-        return { success: true, localUri: result.uri };
-      } catch (mediaError) {
-        // Fallback: keep file in app cache directory
-        console.log('MediaLibrary save failed, using cache directory:', mediaError);
-        onComplete?.(result.uri);
-        return { success: true, localUri: result.uri };
+    // Use share sheet to let user save the file (works on Android 10+)
+    try {
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(result.uri, {
+          dialogTitle: `Save "${fileName}"`,
+          mimeType: getMimeType(fileName),
+        });
       }
-    } else {
-      // iOS: Use share sheet to save
-      onComplete?.(result.uri);
-      return { success: true, localUri: result.uri };
+    } catch (shareError) {
+      console.log('Share sheet error (file still in cache):', shareError);
     }
+    
+    console.log(`✅ File downloaded: ${sanitizedFileName}`);
+    onComplete?.(result.uri);
+    return { success: true, localUri: result.uri };
     
   } catch (error: any) {
     console.error('❌ Download failed:', error);
